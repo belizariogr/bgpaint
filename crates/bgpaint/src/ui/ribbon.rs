@@ -7,12 +7,13 @@ use super::menubar::MenuKind;
 use super::widgets::{self, IconButton};
 use crate::app::{PaintApp, Swatch};
 use crate::commands::Command;
+use crate::settings::{FlipDefault, RotateDefault};
 use crate::theme::Theme;
 use crate::tools::Tool;
 use bgpaint_core::brush::{BlendMode, BrushKind, Stroke, Texture, apply_mask};
 use bgpaint_core::color::Color;
 use bgpaint_core::geom::{PixelRect, Point, RectF};
-use bgpaint_core::raster;
+use bgpaint_core::raster::{self, QuarterTurn};
 use bgpaint_core::shapes::{self, ShapeKind};
 use egui::{Align2, Color32, Id, Pos2, Rect, Sense, Stroke as EStroke, pos2, vec2};
 
@@ -34,6 +35,25 @@ pub fn to_egui(c: Color) -> Color32 {
 }
 
 impl PaintApp {
+    /// A choice from the ribbon's Rotate or Flip menu becomes what its button does from now on.
+    /// "Custom rotation" keeps the previous default.
+    pub fn remember_ribbon_default(&mut self, menu: MenuKind, cmd: &Command) {
+        let (rotate, flip) = match (menu, cmd) {
+            (MenuKind::Rotate, Command::Rotate(QuarterTurn::Cw90)) => (Some(RotateDefault::Right), None),
+            (MenuKind::Rotate, Command::Rotate(QuarterTurn::Ccw90)) => (Some(RotateDefault::Left), None),
+            (MenuKind::Rotate, Command::Rotate(QuarterTurn::Half)) => (Some(RotateDefault::Half), None),
+            (MenuKind::Flip, Command::FlipHorizontal) => (None, Some(FlipDefault::Horizontal)),
+            (MenuKind::Flip, Command::FlipVertical) => (None, Some(FlipDefault::Vertical)),
+            _ => return,
+        };
+        let changed = rotate.is_some_and(|r| r != self.settings.rotate_default) || flip.is_some_and(|f| f != self.settings.flip_default);
+        if changed {
+            self.settings.rotate_default = rotate.unwrap_or(self.settings.rotate_default);
+            self.settings.flip_default = flip.unwrap_or(self.settings.flip_default);
+            self.settings.save();
+        }
+    }
+
     pub fn ribbon_visible(&self) -> bool {
         !(self.settings.auto_hide_toolbar || self.ui.ribbon_collapsed) || self.ui.ribbon_revealed
     }
@@ -120,9 +140,15 @@ impl PaintApp {
         {
             self.execute(&ctx, Command::Crop);
         }
+        // Rotate and Flip run their last choice from the menu right away; the chevron opens the menu.
         let rot = btn(128.0, row1);
-        if IconButton::new(ic::ROTATE_RIGHT).tooltip(tr.rotate).show(ui, t, rot, Id::unique("rb-rot")).clicked() {
-            self.toggle_menu(MenuKind::Rotate, rot.union(btn(150.0, row1)));
+        let (glyph, tip, turn) = match self.settings.rotate_default {
+            RotateDefault::Right => (ic::ROTATE_RIGHT, tr.rotate_right, QuarterTurn::Cw90),
+            RotateDefault::Left => (ic::ROTATE_LEFT, tr.rotate_left, QuarterTurn::Ccw90),
+            RotateDefault::Half => (ic::ROTATE_CUSTOM, tr.rotate_180, QuarterTurn::Half),
+        };
+        if IconButton::new(glyph).tooltip(tip).show(ui, t, rot, Id::unique("rb-rot")).clicked() {
+            self.execute(&ctx, Command::Rotate(turn));
         }
         let ch = Rect::from_center_size(at(155.0, row1), vec2(16.0, 32.0));
         if widgets::chevron_button(ui, t, ch, Id::unique("rb-rot-ch"), true, self.ui.open_menu == Some(MenuKind::Rotate)).clicked() {
@@ -136,8 +162,12 @@ impl PaintApp {
             self.execute(&ctx, Command::InvertColors);
         }
         let flip = btn(128.0, row2);
-        if IconButton::new(ic::FLIP_H).tooltip(tr.flip).show(ui, t, flip, Id::unique("rb-flip")).clicked() {
-            self.toggle_menu(MenuKind::Flip, flip);
+        let (glyph, tip, cmd) = match self.settings.flip_default {
+            FlipDefault::Horizontal => (ic::FLIP_H, tr.flip_horizontal, Command::FlipHorizontal),
+            FlipDefault::Vertical => (ic::FLIP_V, tr.flip_vertical, Command::FlipVertical),
+        };
+        if IconButton::new(glyph).tooltip(tip).show(ui, t, flip, Id::unique("rb-flip")).clicked() {
+            self.execute(&ctx, cmd);
         }
         let ch = Rect::from_center_size(at(155.0, row2), vec2(16.0, 32.0));
         if widgets::chevron_button(ui, t, ch, Id::unique("rb-flip-ch"), true, self.ui.open_menu == Some(MenuKind::Flip)).clicked() {
