@@ -231,6 +231,24 @@ pub mod mac {
         r
     }
 
+    /// `NSButton` with `hasDestructiveAction`, as in macOS 26 save alerts: red title on a red tint.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn destructive_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
+        let (row, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+        let red = if t.dark { Color32::from_rgb(0xFF, 0x45, 0x3A) } else { Color32::from_rgb(0xFF, 0x38, 0x2B) };
+        let r = control_rect(row);
+        let alpha = match (resp.is_pointer_button_down_on(), t.dark) {
+            (true, true) => 0.42,
+            (false, true) => 0.28,
+            (true, false) => 0.24,
+            (false, false) => 0.14,
+        };
+        let p = ui.painter();
+        p.rect_filled(r, CornerRadius::same(CONTROL_RADIUS), red.gamma_multiply(alpha));
+        p.text(r.center(), Align2::CENTER_CENTER, text, font(), red);
+        resp
+    }
+
     /// `NSButton` with the push bezel; `default` is the blue key-equivalent (Return) button.
     pub fn push_button(p: &egui::Painter, t: &Theme, row: Rect, pressed: bool, enabled: bool, default: bool, text: &str) {
         let r = bezel(p, t, row, pressed, default && enabled);
