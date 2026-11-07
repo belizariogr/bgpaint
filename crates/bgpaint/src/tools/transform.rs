@@ -68,12 +68,12 @@ impl BoxGeom {
     }
 
     /// World position of a point given in the unrotated box frame.
-    pub fn to_world(&self, p: Point) -> Point {
+    pub fn to_world(self, p: Point) -> Point {
         rotate(p, self.center(), self.angle)
     }
 
     /// Unrotated box frame position of a world point.
-    pub fn to_local(&self, p: Point) -> Point {
+    pub fn to_local(self, p: Point) -> Point {
         rotate(p, self.center(), -self.angle)
     }
 

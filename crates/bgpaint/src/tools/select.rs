@@ -255,10 +255,8 @@ impl PaintApp {
         let Some(mask) = op.mask.clone() else { return };
         let Some(original) = mask.extract(&self.doc.active_layer().pixels) else { return };
         let mut changes = Vec::new();
-        if !copy {
-            if let Some(c) = self.doc.edit_active(mask.rect, |layer| mask.clear(layer)) {
-                changes.push(c);
-            }
+        if !copy && let Some(c) = self.doc.edit_active(mask.rect, |layer| mask.clear(layer)) {
+            changes.push(c);
         }
         let pixels = self.keyed(&original);
         op.floating = Some(Floating { original, pixels, changes });
@@ -281,10 +279,10 @@ impl PaintApp {
             return;
         }
         let full = PixelRect::from_size(op.canvas.0, op.canvas.1);
-        if let Some(c) = self.doc.edit_active(bounds, |layer| op.apply(layer, full)) {
-            if let Some(f) = &mut op.floating {
-                f.changes.push(c);
-            }
+        if let Some(c) = self.doc.edit_active(bounds, |layer| op.apply(layer, full))
+            && let Some(f) = &mut op.floating
+        {
+            f.changes.push(c);
         }
     }
 
@@ -324,12 +322,12 @@ impl PaintApp {
     }
 
     pub fn select_cursor(&self, pos: Pos2) -> egui::CursorIcon {
-        if let Active::Select(op) = &self.active {
-            if op.established() {
-                let p = self.view.to_canvas(pos);
-                if let Some(h) = op.geom.hit(p, 6.0 / self.view.scale(), 24.0 / self.view.scale()) {
-                    return h.cursor(op.geom.angle);
-                }
+        if let Active::Select(op) = &self.active
+            && op.established()
+        {
+            let p = self.view.to_canvas(pos);
+            if let Some(h) = op.geom.hit(p, 6.0 / self.view.scale(), 24.0 / self.view.scale()) {
+                return h.cursor(op.geom.angle);
             }
         }
         egui::CursorIcon::Crosshair
@@ -431,6 +429,11 @@ impl PaintApp {
     }
 
     pub fn delete_selection(&mut self) {
+        // A shape that is still editable is simply discarded.
+        if matches!(self.active, Active::Shape(_)) {
+            self.cancel_interaction();
+            return;
+        }
         if !matches!(self.active, Active::Select(_)) {
             return;
         }
@@ -447,16 +450,16 @@ impl PaintApp {
 
     pub fn set_transparent_selection(&mut self, on: bool) {
         self.tools.transparent_selection = on;
-        if let Active::Select(op) = &mut self.active {
-            if let Some(f) = &mut op.floating {
-                let mut p = f.original.clone();
-                if on {
-                    key_out(&mut p, self.colors.secondary);
-                }
-                f.pixels = p;
-                let d = op.update();
-                self.preview_dirty.add(d);
+        if let Active::Select(op) = &mut self.active
+            && let Some(f) = &mut op.floating
+        {
+            let mut p = f.original.clone();
+            if on {
+                key_out(&mut p, self.colors.secondary);
             }
+            f.pixels = p;
+            let d = op.update();
+            self.preview_dirty.add(d);
         }
     }
 

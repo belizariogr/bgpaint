@@ -154,10 +154,10 @@ pub fn decode(bytes: &[u8], ext: &str) -> Result<Pixmap, IoError> {
         return decode_svg(bytes);
     }
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-    if reader.format().is_none() {
-        if let Some(f) = image::ImageFormat::from_extension(ext) {
-            reader.set_format(f);
-        }
+    if reader.format().is_none()
+        && let Some(f) = image::ImageFormat::from_extension(ext)
+    {
+        reader.set_format(f);
     }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(4 * raster::MAX_AREA);
@@ -229,11 +229,13 @@ pub fn encode(pixmap: &Pixmap, format: SaveFormat) -> Result<Vec<u8>, IoError> {
 }
 
 fn rgb_only(rgba: &[u8]) -> Vec<u8> {
-    rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+    rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
 }
 
 fn flatten_on(rgba: &[u8], bg: Color) -> Vec<u8> {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|p| {
             let a = u32::from(p[3]);
             let mix = |c: u8, b: u8| ((u32::from(c) * a + u32::from(b) * (255 - a) + 127) / 255) as u8;

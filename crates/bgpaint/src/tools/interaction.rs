@@ -142,7 +142,7 @@ impl PaintApp {
             Tool::Magnifier => self.magnify(pos, secondary),
             Tool::Shape => self.shape_pointer_down(p, pos, button, modifiers),
             Tool::Select => self.select_pointer_down(p, pos, button, modifiers),
-            Tool::Text => self.text_pointer_down(p, pos, button),
+            Tool::Text => self.text_pointer_down(p, pos, button, modifiers),
         }
     }
 

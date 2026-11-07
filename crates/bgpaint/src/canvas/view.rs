@@ -1,10 +1,12 @@
 //! Zoom and scroll state of the canvas viewport.
 
 use bgpaint_core::geom::Point;
-use egui::{Pos2, Rect, Vec2, pos2, vec2};
+use egui::{Pos2, Rect, Vec2, vec2};
 
 /// Space kept around the canvas (room for the resize handles), in points.
 pub const MARGIN: f32 = 24.0;
+/// Minimum space around a canvas that is shown whole (and around "Fit to window"), in points.
+pub const FIT_PADDING: f32 = 12.0;
 pub const MIN_ZOOM: f32 = 0.01;
 pub const MAX_ZOOM: f32 = 32.0;
 /// Paint's zoom presets.
@@ -86,11 +88,17 @@ impl View {
         }
     }
 
-    /// Zoom that makes the whole canvas visible (never above 100%).
+    /// Zoom at which the canvas fills the viewport as much as possible, uncropped,
+    /// with [`FIT_PADDING`] on every side.
     pub fn fit_zoom(&self) -> f32 {
-        let avail = (self.viewport.size() - Vec2::splat(MARGIN * 2.0)).max(Vec2::splat(16.0));
+        let avail = (self.viewport.size() - Vec2::splat(FIT_PADDING * 2.0)).max(Vec2::splat(16.0));
         let z = (avail.x / self.canvas.0 as f32).min(avail.y / self.canvas.1 as f32) * self.ppp;
-        z.clamp(MIN_ZOOM, 1.0)
+        z.clamp(MIN_ZOOM, MAX_ZOOM)
+    }
+
+    /// Whether the canvas fits along `axis` and is therefore centered.
+    pub fn fits(&self, axis: usize) -> bool {
+        self.canvas_size_points()[axis] + FIT_PADDING * 2.0 <= self.viewport.size()[axis] + 0.01
     }
 
     fn center_small_axes(&mut self, force: bool) {
@@ -98,7 +106,7 @@ impl View {
         let vp = self.viewport.size();
         for axis in 0..2 {
             let (s, v) = (size[axis], vp[axis]);
-            if s + MARGIN * 2.0 <= v {
+            if self.fits(axis) {
                 self.offset[axis] = ((v - s) / 2.0).round();
             } else {
                 let min = v - s - MARGIN;
@@ -176,14 +184,10 @@ impl View {
     }
 }
 
-/// Screen position helper for scrollbars.
-pub fn lerp_pos(a: Pos2, b: Pos2, t: f32) -> Pos2 {
-    pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::pos2;
 
     fn view(vw: f32, vh: f32, w: u32, h: u32) -> View {
         let mut v = View::default();
@@ -223,6 +227,13 @@ mod tests {
         let mut v = view(548.0, 348.0, 1000, 600);
         v.request_fit();
         v.layout(v.viewport, (1000, 600), 1.0);
-        assert!((v.zoom - 0.5).abs() < 1e-3, "{}", v.zoom);
+        assert!((v.zoom - 0.524).abs() < 1e-3, "{}", v.zoom);
+        assert!(v.fits(0) && v.fits(1));
+        assert_eq!(v.offset.x, 12.0);
+        // Small images are enlarged to fill the window.
+        let mut v = view(548.0, 348.0, 100, 50);
+        v.request_fit();
+        v.layout(v.viewport, (100, 50), 1.0);
+        assert!((v.zoom - 5.24).abs() < 1e-3, "{}", v.zoom);
     }
 }

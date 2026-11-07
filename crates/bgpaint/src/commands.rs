@@ -20,6 +20,10 @@ pub enum Command {
     New,
     Open,
     OpenRecent(PathBuf),
+    SwitchTab(usize),
+    CycleTab(bool),
+    /// Closes a tab (`usize::MAX` = the active one).
+    CloseTab(usize),
     ImportFromFile,
     Save,
     SaveAs(Option<SaveFormat>),
@@ -69,7 +73,6 @@ pub enum Command {
     ToggleThumbnail,
     ToggleLayersPanel,
     OpenSettings,
-    CloseSettings,
     EditColors,
     AddLayer,
     DuplicateLayer(usize),
@@ -90,6 +93,9 @@ pub fn shortcuts() -> Vec<(KeyboardShortcut, Command)> {
     let k = KeyboardShortcut::new;
     vec![
         (k(c, Key::N), Command::New),
+        (k(cs, Key::Tab), Command::CycleTab(false)),
+        (k(c, Key::Tab), Command::CycleTab(true)),
+        (k(c, Key::F4), Command::CloseTab(usize::MAX)),
         (k(c, Key::O), Command::Open),
         (k(cs, Key::S), Command::SaveProject),
         (k(c, Key::S), Command::Save),

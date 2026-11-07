@@ -28,15 +28,13 @@ impl FileState {
 /// An action waiting for the user to resolve unsaved changes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
-    New,
-    Open,
-    OpenPath(PathBuf),
+    CloseTab,
     Exit,
 }
 
 /// Results of dialogs running on a background thread.
 pub enum DialogResult {
-    Open(PathBuf),
+    Open(Vec<PathBuf>),
     Import(PathBuf),
     SaveAs(PathBuf, SaveFormat, Option<Pending>),
     /// A background job finished; show this message.
@@ -89,7 +87,11 @@ impl PaintApp {
     pub fn poll_async(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.files.rx.try_recv() {
             match r {
-                DialogResult::Open(p) => self.open_path(ctx, p),
+                DialogResult::Open(paths) => {
+                    for p in paths {
+                        self.open_path(ctx, p);
+                    }
+                }
                 DialogResult::Import(p) => self.import_path(ctx, p),
                 DialogResult::Toast(text) => self.show_toast(text),
                 DialogResult::SaveAs(p, f, then) => {
@@ -119,18 +121,13 @@ impl PaintApp {
         self.files.deferred = Some(action);
     }
 
-    pub fn run_pending(&mut self, ctx: &egui::Context, action: Pending) {
+    pub fn run_pending(&mut self, _ctx: &egui::Context, action: Pending) {
         match action {
-            Pending::New => {
-                let doc = Document::new(DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("default canvas size is valid");
-                self.set_document(doc);
-                self.file = FileState { saved_state: self.history.state_id(), ..FileState::default() };
-            }
-            Pending::Open => self.open_dialog(ctx),
-            Pending::OpenPath(p) => self.open_path(ctx, p),
+            Pending::CloseTab => self.close_current_tab(),
             Pending::Exit => {
+                // This tab was saved or its changes discarded; go on with the next one.
                 self.file.saved_state = self.history.state_id();
-                self.allow_close = true;
+                self.request_exit();
             }
         }
     }
@@ -161,8 +158,15 @@ impl PaintApp {
             if let Some(dir) = dir {
                 d = d.set_directory(dir);
             }
-            pollster::block_on(d.pick_file()).map(|f| DialogResult::Open(f.path().to_path_buf()))
+            let files = pollster::block_on(d.pick_files())?;
+            Some(DialogResult::Open(files.iter().map(|f| f.path().to_path_buf()).collect()))
         });
+    }
+
+    /// "New": a blank canvas in a new tab.
+    pub fn new_tab(&mut self) {
+        let doc = Document::new(DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("default canvas size is valid");
+        self.add_tab(doc, FileState::default());
     }
 
     pub fn import_dialog(&mut self, ctx: &egui::Context) {
@@ -250,17 +254,16 @@ impl PaintApp {
         }
     }
 
+    /// Opens a file in its own tab (or switches to it when it is already open).
     pub fn open_path(&mut self, _ctx: &egui::Context, path: PathBuf) {
+        if self.focus_open_path(&path) {
+            return;
+        }
         match io::open(&path) {
             Ok(opened) => {
-                self.set_document(opened.document);
                 let size = std::fs::metadata(&path).ok().map(|m| m.len());
-                self.file = FileState {
-                    path: Some(path.clone()),
-                    format: opened.save_format,
-                    saved_state: self.history.state_id(),
-                    disk_size: size,
-                };
+                let file = FileState { path: Some(path.clone()), format: opened.save_format, saved_state: 0, disk_size: size };
+                self.show_document(opened.document, file);
                 self.settings.last_dir = path.parent().map(Path::to_path_buf);
                 self.settings.add_recent(path);
                 self.settings.save();
@@ -287,8 +290,8 @@ impl PaintApp {
         }
         let dropped: Vec<PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        if let Some(path) = dropped.into_iter().next() {
-            self.confirm_unsaved(Pending::OpenPath(path));
+        for path in dropped {
+            self.open_path(ctx, path);
         }
     }
 }
@@ -302,11 +305,5 @@ impl PaintApp {
             let _ = tx.send(DialogResult::Toast(job()));
             ctx.request_repaint();
         });
-    }
-}
-
-impl Async {
-    pub fn is_busy(&self) -> bool {
-        self.busy.load(std::sync::atomic::Ordering::SeqCst)
     }
 }

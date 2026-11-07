@@ -11,7 +11,7 @@ use crate::tools::{MAX_SIZE, Tool};
 use crate::ui::icons::regular as ic;
 use crate::ui::widgets;
 use bgpaint_core::geom::Point;
-use egui::{Align2, Color32, CursorIcon, Id, Pos2, Rect, Sense, Stroke, Vec2, pos2, vec2};
+use egui::{Align2, Color32, CursorIcon, Id, Rect, Sense, Stroke, Vec2, pos2, vec2};
 
 const RULER: f32 = 20.0;
 const SCROLLBAR: f32 = 12.0;
@@ -285,7 +285,7 @@ impl PaintApp {
         for vertical in [false, true] {
             let axis = usize::from(vertical);
             let (vsize, csize) = (viewport.size()[axis], content[axis]);
-            if csize <= vsize + 0.5 {
+            if self.view.fits(axis) {
                 continue;
             }
             let track = if vertical {
@@ -414,11 +414,6 @@ impl PaintApp {
     pub fn paint_overlays(&self, painter: &egui::Painter, t: &Theme) {
         self.paint_tool_overlays(painter, t);
     }
-}
-
-/// Converts a canvas point to screen space for overlays drawn by tools.
-pub fn screen(app: &PaintApp, p: Point) -> Pos2 {
-    app.view.to_screen(p)
 }
 
 impl Handle {

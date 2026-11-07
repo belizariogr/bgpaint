@@ -189,7 +189,7 @@ mod tests {
         let mut doc = Document::new(10, 10).unwrap();
         let mut h = History::with_budget(10 * 10 * 4 + 1);
         for _ in 0..3 {
-            let c = doc.edit_active(doc.bounds(), |p| raster::invert_colors(p));
+            let c = doc.edit_active(doc.bounds(), raster::invert_colors);
             h.push_one("invert", c);
         }
         assert!(h.undo(&mut doc));

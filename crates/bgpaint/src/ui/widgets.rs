@@ -142,9 +142,7 @@ pub fn standard_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Respon
 }
 
 pub fn paint_standard_button(ui: &Ui, t: &Theme, rect: Rect, resp: &Response, text: &str, enabled: bool) {
-    let fill = if !enabled {
-        t.button_bg
-    } else if resp.is_pointer_button_down_on() {
+    let fill = if !enabled || resp.is_pointer_button_down_on() {
         t.button_bg
     } else if resp.hovered() {
         t.button_hover
@@ -197,14 +195,17 @@ pub fn paint_checkbox(p: &egui::Painter, t: &Theme, center: Pos2, checked: bool,
 /// A Fluent text field; returns the inner response. `width` in points.
 pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
-    let inner = rect.shrink2(vec2(10.0, 6.0));
+    // The editor spans the whole field height so its text is centered vertically.
+    let inner = rect.shrink2(vec2(10.0, 1.0));
     ui.painter().rect(rect, RADIUS, t.input_bg, Stroke::new(1.0, t.input_border), StrokeKind::Inside);
     let edit = egui::TextEdit::singleline(value)
         .id(id)
         .frame(egui::Frame::NONE)
+        .margin(egui::Margin::ZERO)
         .font(FontId::proportional(14.0))
         .text_color(t.text)
         .align(egui::Align2::LEFT_CENTER)
+        .min_size(inner.size())
         .desired_width(inner.width());
     // A child ui keeps the parent's layout cursor where `allocate_exact_size` left it.
     let resp = ui.new_child(egui::UiBuilder::new().max_rect(inner)).add(edit);
@@ -215,7 +216,15 @@ pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id
 }
 
 /// A numeric text field bound to an integer. Returns true when the value changed.
-pub fn number_field(ui: &mut Ui, t: &Theme, value: &mut i64, min: i64, max: i64, width: f32, suffix: &str, id: Id) -> bool {
+pub fn number_field(
+    ui: &mut Ui,
+    t: &Theme,
+    value: &mut i64,
+    range: std::ops::RangeInclusive<i64>,
+    width: f32,
+    suffix: &str,
+    id: Id,
+) -> bool {
     let buf_id = id.with("buf");
     let mut text: String = ui.data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| format!("{value}{suffix}"));
     let had_focus = ui.memory(|m| m.has_focus(id));
@@ -227,7 +236,7 @@ pub fn number_field(ui: &mut Ui, t: &Theme, value: &mut i64, min: i64, max: i64,
     if resp.changed() {
         let digits: String = text.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
         if let Ok(v) = digits.parse::<i64>() {
-            let v = v.clamp(min, max);
+            let v = v.clamp(*range.start(), *range.end());
             if v != *value {
                 *value = v;
                 changed = true;

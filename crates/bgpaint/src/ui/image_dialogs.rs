@@ -111,16 +111,12 @@ impl PaintApp {
                 }
             });
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(tr.horizontal).size(14.0).color(t.text));
-                ui.add_space(110.0);
-                ui.label(RichText::new(tr.vertical).size(14.0).color(t.text));
-            });
+            dialogs::label_row(ui, t, &[(tr.horizontal, 0.0), (tr.vertical, 152.0)]);
             let max = if s.by_percent { 2000 } else { i64::from(MAX_SIDE) };
             let ratio = s.orig.1 as f64 / s.orig.0.max(1) as f64;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                if widgets::number_field(ui, t, &mut s.h, 1, max, 112.0, "", Id::unique("rs-h")) && s.keep_ratio {
+                if widgets::number_field(ui, t, &mut s.h, 1..=max, 112.0, "", Id::unique("rs-h")) && s.keep_ratio {
                     s.v = if s.by_percent { s.h } else { ((s.h as f64) * ratio).round().max(1.0) as i64 };
                 }
                 let link = ui.allocate_exact_size(vec2(28.0, 32.0), egui::Sense::hover()).0;
@@ -133,20 +129,16 @@ impl PaintApp {
                 {
                     s.keep_ratio = !s.keep_ratio;
                 }
-                if widgets::number_field(ui, t, &mut s.v, 1, max, 112.0, "", Id::unique("rs-v")) && s.keep_ratio {
+                if widgets::number_field(ui, t, &mut s.v, 1..=max, 112.0, "", Id::unique("rs-v")) && s.keep_ratio {
                     s.h = if s.by_percent { s.v } else { ((s.v as f64) / ratio).round().max(1.0) as i64 };
                 }
             });
             ui.add_space(8.0);
             dialogs::section(ui, t, tr.skew);
+            dialogs::label_row(ui, t, &[(tr.horizontal, 0.0), (tr.vertical, 136.0)]);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(tr.horizontal).size(14.0).color(t.text));
-                ui.add_space(80.0);
-                ui.label(RichText::new(tr.vertical).size(14.0).color(t.text));
-            });
-            ui.horizontal(|ui| {
-                widgets::number_field(ui, t, &mut s.skew_h, -89, 89, 128.0, "°", Id::unique("rs-sh"));
-                widgets::number_field(ui, t, &mut s.skew_v, -89, 89, 128.0, "°", Id::unique("rs-sv"));
+                widgets::number_field(ui, t, &mut s.skew_h, -89..=89, 128.0, "°", Id::unique("rs-sh"));
+                widgets::number_field(ui, t, &mut s.skew_v, -89..=89, 128.0, "°", Id::unique("rs-sv"));
             });
             ui.add_space(8.0);
         });
@@ -202,21 +194,17 @@ impl PaintApp {
             ui.add_space(6.0);
             ui.separator();
             dialogs::section(ui, t, tr.image_size);
+            dialogs::label_row(ui, t, &[(tr.width, 0.0), (tr.height, 194.0)]);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(tr.width).size(14.0).color(t.text));
-                ui.add_space(150.0);
-                ui.label(RichText::new(tr.height).size(14.0).color(t.text));
-            });
-            ui.horizontal(|ui| {
-                if widgets::text_field(ui, t, &mut s.text_w, 186.0, Id::unique("props-w")).changed() {
-                    if let Some(v) = from_unit(&s.text_w, s.units) {
-                        s.w = v;
-                    }
+                if widgets::text_field(ui, t, &mut s.text_w, 186.0, Id::unique("props-w")).changed()
+                    && let Some(v) = from_unit(&s.text_w, s.units)
+                {
+                    s.w = v;
                 }
-                if widgets::text_field(ui, t, &mut s.text_h, 186.0, Id::unique("props-h")).changed() {
-                    if let Some(v) = from_unit(&s.text_h, s.units) {
-                        s.h = v;
-                    }
+                if widgets::text_field(ui, t, &mut s.text_h, 186.0, Id::unique("props-h")).changed()
+                    && let Some(v) = from_unit(&s.text_h, s.units)
+                {
+                    s.h = v;
                 }
                 if widgets::standard_button(ui, t, tr.default, 90.0).clicked() {
                     s.w = DEFAULT_WIDTH;
@@ -246,7 +234,7 @@ impl PaintApp {
         let r = dialog(ctx, t, "rotate-dialog", tr.rotate_custom, 340.0, (tr.ok, Some(tr.cancel), None), |ui| {
             dialogs::section(ui, t, tr.angle);
             ui.horizontal(|ui| {
-                widgets::number_field(ui, t, &mut s.angle, -360, 360, 100.0, "°", Id::unique("rot-angle"));
+                widgets::number_field(ui, t, &mut s.angle, -360..=360, 100.0, "°", Id::unique("rot-angle"));
                 let (rect, _) = ui.allocate_exact_size(vec2(180.0, 32.0), egui::Sense::hover());
                 let mut v = (s.angle as f32 + 180.0) / 360.0;
                 if widgets::slider(ui, t, rect, Id::unique("rot-slider"), &mut v, false).dragged() {

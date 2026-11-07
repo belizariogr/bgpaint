@@ -142,12 +142,12 @@ impl PaintApp {
                 ui.add_space(16.0);
                 ui.vertical(|ui| {
                     let resp = widgets::text_field(ui, t, &mut d.hex, 130.0, Id::unique("cd-hex"));
-                    if resp.changed() {
-                        if let Some(c) = Color::parse_hex(&d.hex) {
-                            let hex = d.hex.clone();
-                            d.set(c);
-                            d.hex = hex;
-                        }
+                    if resp.changed()
+                        && let Some(c) = Color::parse_hex(&d.hex)
+                    {
+                        let hex = d.hex.clone();
+                        d.set(c);
+                        d.hex = hex;
                     }
                     if resp.lost_focus() {
                         d.hex = d.color().to_hex_string();
@@ -185,8 +185,7 @@ impl PaintApp {
                                 ui,
                                 t,
                                 &mut values[i],
-                                0,
-                                maxes[i],
+                                0..=maxes[i],
                                 92.0,
                                 "",
                                 Id::unique(("cd-field", i, d.mode == Mode::Rgb)),
@@ -287,8 +286,12 @@ impl PaintApp {
                 let c = d.color();
                 match d.target {
                     ColorTarget::Active => {
+                        // A selected custom slot is redefined; otherwise the color joins the custom row.
+                        let redefine = matches!(self.colors.selected, Some(crate::app::Swatch::Custom(_)));
                         self.set_active_color(c);
-                        self.add_recent_color(c);
+                        if !redefine {
+                            self.add_recent_color(c);
+                        }
                     }
                     ColorTarget::Background => {
                         let mut bg = self.doc.background();

@@ -76,6 +76,8 @@ pub struct TextOp {
     canvas: (u32, u32),
     blink: Instant,
     undo: Vec<String>,
+    /// Time, position and count of the last click inside the box (double/triple click).
+    last_click: Option<(Instant, Point, u8)>,
 }
 
 impl ActivePreview for TextOp {
@@ -130,9 +132,13 @@ impl TextOp {
         self.editor.shape_as_needed(&mut fonts.system, false);
     }
 
+    /// Position inside the text layout. Points below the last line (or above the first)
+    /// map onto that line, as in a regular text field.
     fn local(&self, p: Point) -> (i32, i32) {
         let l = self.geom.to_local(p);
-        ((l.x - self.geom.rect.min.x) as i32, (l.y - self.geom.rect.min.y) as i32)
+        let content = self.editor.with_buffer(text::content_height);
+        let y = (l.y - self.geom.rect.min.y).clamp(0.0, (content - 1.0).max(0.0));
+        ((l.x - self.geom.rect.min.x).round() as i32, y as i32)
     }
 
     fn snapshot(&mut self) {
@@ -162,27 +168,44 @@ impl PaintApp {
         }
     }
 
-    pub fn text_pointer_down(&mut self, p: Point, _pos: Pos2, button: PointerButton) {
+    pub fn text_pointer_down(&mut self, p: Point, _pos: Pos2, button: PointerButton, modifiers: egui::Modifiers) {
         let tol = 6.0 / self.view.scale();
-        if let Active::Text(op) = &mut self.active {
-            if button == PointerButton::Primary {
-                let inner = RectF {
-                    min: Point::new(op.geom.rect.min.x + tol, op.geom.rect.min.y + tol),
-                    max: Point::new(op.geom.rect.max.x - tol, op.geom.rect.max.y - tol),
+        if let Active::Text(op) = &mut self.active
+            && button == PointerButton::Primary
+        {
+            let inner = RectF {
+                min: Point::new(op.geom.rect.min.x + tol, op.geom.rect.min.y + tol),
+                max: Point::new(op.geom.rect.max.x - tol, op.geom.rect.max.y - tol),
+            };
+            let local = op.geom.to_local(p);
+            if inner.contains(local) {
+                let (x, y) = op.local(p);
+                let mut f = fonts();
+                let near = 4.0 / self.view.scale();
+                let count = match op.last_click {
+                    Some((at, q, n)) if at.elapsed().as_millis() < 450 && (q.x - p.x).abs() < near && (q.y - p.y).abs() < near => n % 3 + 1,
+                    _ => 1,
                 };
-                let local = op.geom.to_local(p);
-                if inner.contains(local) {
-                    let (x, y) = op.local(p);
-                    let mut f = fonts();
-                    op.editor.action(&mut f.system, Action::Click { x, y });
-                    op.drag = Some(TextDrag::Select);
-                    op.blink = Instant::now();
-                    return;
+                op.last_click = Some((Instant::now(), p, count));
+                match count {
+                    2 => op.editor.action(&mut f.system, Action::DoubleClick { x, y }),
+                    3 => op.editor.action(&mut f.system, Action::TripleClick { x, y }),
+                    _ if modifiers.shift => {
+                        // Shift+click extends the selection from the caret.
+                        if op.editor.selection() == Selection::None {
+                            op.editor.set_selection(Selection::Normal(op.editor.cursor()));
+                        }
+                        op.editor.action(&mut f.system, Action::Drag { x, y });
+                    }
+                    _ => op.editor.action(&mut f.system, Action::Click { x, y }),
                 }
-                if let Some(hit) = op.geom.hit(p, tol, 24.0 / self.view.scale()) {
-                    op.drag = Some(TextDrag::Box(hit, p, op.geom));
-                    return;
-                }
+                op.drag = Some(TextDrag::Select);
+                op.blink = Instant::now();
+                return;
+            }
+            if let Some(hit) = op.geom.hit(p, tol, 24.0 / self.view.scale()) {
+                op.drag = Some(TextDrag::Box(hit, p, op.geom));
+                return;
             }
         }
         self.commit_interaction();
@@ -199,6 +222,7 @@ impl PaintApp {
             canvas: (self.doc.width(), self.doc.height()),
             blink: Instant::now(),
             undo: Vec::new(),
+            last_click: None,
         };
         op.update(&mut f);
         self.active = Active::Text(op);
@@ -269,10 +293,8 @@ impl PaintApp {
             let local = op.geom.to_local(p);
             let r = op.geom.rect;
             let inner = local.x > r.min.x + tol && local.x < r.max.x - tol && local.y > r.min.y + tol && local.y < r.max.y - tol;
-            if !inner {
-                if let Some(h) = op.geom.hit(p, tol, 24.0 / self.view.scale()) {
-                    return h.cursor(op.geom.angle);
-                }
+            if !inner && let Some(h) = op.geom.hit(p, tol, 24.0 / self.view.scale()) {
+                return h.cursor(op.geom.angle);
             }
         }
         egui::CursorIcon::Text
@@ -501,12 +523,9 @@ pub fn paint_overlay(op: &TextOp, view: &View, painter: &egui::Painter, t: &Them
             }
         });
     }
-    let on = (op.blink.elapsed().as_millis() / 530) % 2 == 0;
-    if on {
-        if let Some(r) = caret_rect(op, view) {
-            painter
-                .line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.5, if t.dark { Color32::WHITE } else { Color32::BLACK }));
-        }
+    let on = (op.blink.elapsed().as_millis() / 530).is_multiple_of(2);
+    if on && let Some(r) = caret_rect(op, view) {
+        painter.line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.5, if t.dark { Color32::WHITE } else { Color32::BLACK }));
     }
     painter.ctx().request_repaint_after(std::time::Duration::from_millis(530));
 }

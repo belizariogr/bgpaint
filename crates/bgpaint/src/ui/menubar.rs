@@ -5,7 +5,7 @@ use super::menu::{self, Entry, Preview};
 use super::widgets::{self, IconButton};
 use crate::app::PaintApp;
 use crate::commands::{Command, WallpaperMode, shortcut_label};
-use crate::tools::{SHAPE_WIDTHS, SelectMode, Tool};
+use crate::tools::{SHAPE_WIDTHS, SelectMode};
 use bgpaint_core::io::SaveFormat;
 use bgpaint_core::raster::QuarterTurn;
 use bgpaint_core::shapes::ShapeStyle;
@@ -92,24 +92,10 @@ impl PaintApp {
                     x += 40.0;
                 }
                 widgets::vseparator(ui.painter(), &t, x + 2.0, cy - 10.0, cy + 10.0);
-                x += 8.0;
-                let undo = [
-                    (ic::UNDO, Command::Undo, self.tr.undo, self.history.can_undo()),
-                    (ic::REDO, Command::Redo, self.tr.redo, self.history.can_redo()),
-                ];
-                for (glyph, cmd, tip, enabled) in undo {
-                    let rect = Rect::from_min_size(pos2(x, cy - 16.0), vec2(36.0, 32.0));
-                    let tip = format!("{tip} ({})", shortcut_label(ui.ctx(), &cmd).unwrap_or_default());
-                    if IconButton::new(glyph)
-                        .size(18.0)
-                        .enabled(enabled)
-                        .tooltip(&tip)
-                        .show(ui, &t, rect, Id::unique(("quick", glyph)))
-                        .clicked()
-                    {
-                        self.execute(ui.ctx(), cmd);
-                    }
-                    x += 40.0;
+                x += 10.0;
+                let strip = Rect::from_min_max(pos2(x, r.top()), pos2(r.right() - 52.0, r.bottom()));
+                if let Some(cmd) = super::tab_strip::show(self, ui, &t, strip) {
+                    self.execute(ui.ctx(), cmd);
                 }
                 let rect = Rect::from_min_size(pos2(r.right() - 44.0, cy - 16.0), vec2(36.0, 32.0));
                 if IconButton::new(ic::SETTINGS)
@@ -422,10 +408,6 @@ impl PaintApp {
             Some(s) => format!("{label} ({s})"),
             None => label.to_owned(),
         }
-    }
-
-    pub fn is_tool(&self, tool: Tool) -> bool {
-        self.tool == tool
     }
 }
 

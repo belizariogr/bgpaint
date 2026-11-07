@@ -334,11 +334,11 @@ impl Document {
     }
 
     pub fn set_layer_visible(&mut self, index: usize, visible: bool) {
-        if let Some(l) = self.state.layers.get_mut(index) {
-            if l.visible != visible {
-                l.visible = visible;
-                self.invalidate_all();
-            }
+        if let Some(l) = self.state.layers.get_mut(index)
+            && l.visible != visible
+        {
+            l.visible = visible;
+            self.invalidate_all();
         }
     }
 

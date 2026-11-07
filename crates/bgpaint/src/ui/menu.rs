@@ -102,7 +102,7 @@ const ROW_H: f32 = 34.0;
 /// Shows a menu whose top-left corner is at `pos`.
 pub fn show<A: Clone>(ctx: &egui::Context, t: &Theme, id: Id, pos: Pos2, entries: &[Entry<A>]) -> MenuOutput<A> {
     let mut out = MenuOutput { action: None, rects: Vec::new() };
-    show_level(ctx, t, id, pos, entries, &mut out, 0);
+    show_level(ctx, t, id, pos, entries, &mut out);
     out
 }
 
@@ -145,7 +145,7 @@ fn preview_width(p: &Preview) -> f32 {
     }
 }
 
-fn show_level<A: Clone>(ctx: &egui::Context, t: &Theme, id: Id, pos: Pos2, entries: &[Entry<A>], out: &mut MenuOutput<A>, depth: usize) {
+fn show_level<A: Clone>(ctx: &egui::Context, t: &Theme, id: Id, pos: Pos2, entries: &[Entry<A>], out: &mut MenuOutput<A>) {
     let (text_w, has_icon, has_check) = measure(ctx, entries);
     let lead = 12.0 + if has_check { 28.0 } else { 0.0 } + if has_icon { 32.0 } else { 0.0 };
     let width = (lead + text_w + 28.0).max(150.0);
@@ -246,7 +246,7 @@ fn show_level<A: Clone>(ctx: &egui::Context, t: &Theme, id: Id, pos: Pos2, entri
     if let Some((i, at)) = open_sub
         && let Some(Entry::Submenu { entries: sub, .. }) = entries.get(i)
     {
-        show_level(ctx, t, id.with(("sub", i)), at, sub, out, depth + 1);
+        show_level(ctx, t, id.with(("sub", i)), at, sub, out);
     }
 }
 

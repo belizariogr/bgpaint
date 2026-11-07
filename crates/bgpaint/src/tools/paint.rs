@@ -89,10 +89,15 @@ impl PaintApp {
     pub fn pick_color(&mut self, p: Point, secondary: bool) {
         let (x, y) = p.floor_i();
         if let Some(c) = self.doc.sample(x, y) {
-            if secondary {
-                self.colors.secondary = c;
+            if secondary == self.colors.editing_secondary {
+                self.set_active_color(c);
             } else {
-                self.colors.primary = c;
+                if secondary {
+                    self.colors.secondary = c;
+                } else {
+                    self.colors.primary = c;
+                }
+                self.on_colors_changed();
             }
             // Like Paint, the picker hands control back to the previous tool.
             if self.previous_tool != Tool::Picker {

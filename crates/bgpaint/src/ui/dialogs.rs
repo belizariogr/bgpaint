@@ -15,6 +15,7 @@ pub enum Modal {
     RotateCustom(super::image_dialogs::RotateState),
     EditColors(super::color_dialog::ColorDialog),
     Print(super::print_dialog::PrintDialog),
+    Settings,
 }
 
 /// What the footer buttons of a dialog produced.
@@ -128,15 +129,21 @@ impl PaintApp {
             Modal::RotateCustom(state) => self.rotate_dialog(ctx, &t, state),
             Modal::EditColors(state) => self.color_dialog(ctx, &t, state),
             Modal::Print(state) => self.print_dialog(ctx, &t, state),
+            Modal::Settings => self.settings_dialog(ctx, &t),
         }
     }
 }
 
-/// Width helper for two-column dialog rows.
-pub fn half(ui: &egui::Ui) -> f32 {
-    (ui.available_width() - 8.0) / 2.0
-}
-
-pub fn spacer(ui: &mut egui::Ui, h: f32) {
-    ui.allocate_space(vec2(1.0, h));
+/// A row of field captions, each starting at an x offset so it lines up with its field below.
+pub fn label_row(ui: &mut egui::Ui, t: &Theme, labels: &[(&str, f32)]) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), egui::Sense::hover());
+    for (text, x) in labels {
+        ui.painter().text(
+            egui::pos2(rect.left() + x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            *text,
+            FontId::proportional(14.0),
+            t.text,
+        );
+    }
 }

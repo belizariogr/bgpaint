@@ -11,9 +11,15 @@ use bgpaint_core::raster::{self, QuarterTurn};
 impl PaintApp {
     pub fn execute(&mut self, ctx: &egui::Context, cmd: Command) {
         match cmd {
-            Command::New => self.confirm_unsaved(Pending::New),
-            Command::Open => self.confirm_unsaved(Pending::Open),
-            Command::OpenRecent(p) => self.confirm_unsaved(Pending::OpenPath(p)),
+            Command::New => self.new_tab(),
+            Command::Open => {
+                self.commit_interaction();
+                self.open_dialog(ctx);
+            }
+            Command::OpenRecent(p) => self.open_path(ctx, p),
+            Command::SwitchTab(i) => self.switch_tab(i),
+            Command::CycleTab(forward) => self.cycle_tab(forward),
+            Command::CloseTab(i) => self.close_tab(if i == usize::MAX { self.current_tab } else { i }),
             Command::ImportFromFile => {
                 self.commit_interaction();
                 self.import_dialog(ctx);
@@ -116,9 +122,9 @@ impl PaintApp {
             Command::ToggleLayersPanel => self.ui.show_layers = !self.ui.show_layers,
             Command::OpenSettings => {
                 self.commit_interaction();
-                self.ui.settings_open = true;
+                self.ui.open_menu = None;
+                self.ui.modal = Some(crate::ui::dialogs::Modal::Settings);
             }
-            Command::CloseSettings => self.ui.settings_open = false,
             Command::EditColors => self.open_color_dialog(crate::ui::color_target::ColorTarget::Active),
             Command::AddLayer => self.layer_op("add layer", |d| {
                 d.add_layer();
@@ -257,6 +263,11 @@ impl PaintApp {
 
     /// Called when Color 1/Color 2 change so a shape or text being edited follows them.
     pub fn on_colors_changed(&mut self) {
+        if let Some(crate::app::Swatch::Palette(i)) = self.colors.selected
+            && bgpaint_core::color::Color::from_hex(crate::ui::ribbon::PALETTE[i]) != self.colors.active()
+        {
+            self.colors.selected = None;
+        }
         self.on_shape_style_changed();
     }
 }

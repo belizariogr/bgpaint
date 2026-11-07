@@ -117,7 +117,7 @@ impl Automation {
 fn save_png(img: &egui::ColorImage, path: &std::path::Path) {
     let (w, h) = (img.size[0] as u32, img.size[1] as u32);
     let Some(mut p) = bgpaint_core::tiny_skia::Pixmap::new(w, h) else { return };
-    for (d, c) in p.data_mut().chunks_exact_mut(4).zip(&img.pixels) {
+    for (d, c) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(&img.pixels) {
         d.copy_from_slice(&c.to_array());
     }
     if let Err(e) = p.save_png(path) {

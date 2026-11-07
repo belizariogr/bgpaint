@@ -109,7 +109,6 @@ strings! {
     natural_pencil: "Natural pencil", "Lápis natural";
     watercolor: "Watercolor brush", "Pincel para aquarela";
     size: "Size", "Tamanho";
-    opacity: "Opacity", "Opacidade";
     // Shapes
     shape_line: "Line", "Linha";
     shape_curve: "Curve", "Curva";
@@ -223,7 +222,6 @@ strings! {
     margins: "Margins (mm)", "Margens (mm)";
     center_on_page: "Center on page", "Centralizar na página";
     paper_size: "Paper size", "Tamanho do papel";
-    default_printer: "Default printer", "Impressora padrão";
     no_printers: "No printers found", "Nenhuma impressora encontrada";
     print_sent: "Sent to the printer", "Enviado para a impressora";
     print_failed: "Printing failed", "Falha na impressão";
@@ -231,7 +229,6 @@ strings! {
     wallpaper_done: "Desktop background updated", "Tela de fundo atualizada";
     share_failed: "Could not share the image", "Não foi possível compartilhar a imagem";
     // Settings page
-    appearance: "Appearance", "Aparência";
     app_theme: "App theme", "Tema do aplicativo";
     theme_light: "Light", "Claro";
     theme_dark: "Dark", "Escuro";
@@ -241,7 +238,6 @@ strings! {
     source_code: "Source code", "Código-fonte";
     license: "License (MIT)", "Licença (MIT)";
     third_party: "Third-party notices", "Avisos de terceiros";
-    language: "Language", "Idioma";
     // Status bar
     zoom_level: "Zoom level", "Nível de zoom";
     canvas_size: "Canvas size", "Tamanho da tela";

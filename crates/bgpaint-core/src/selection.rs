@@ -88,7 +88,7 @@ impl SelectionMask {
         let r = self.rect.intersect(&raster::bounds(layer));
         if self.data.is_some() {
             let w = out.width() as usize;
-            for (i, px) in out.data_mut().chunks_exact_mut(4).enumerate() {
+            for (i, px) in out.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let (x, y) = (r.x0 + (i % w) as i32, r.y0 + (i / w) as i32);
                 let m = u16::from(self.get(x, y));
                 if m != 255 {
@@ -144,7 +144,7 @@ impl SelectionMask {
 
 /// Makes every pixel equal to `key` (ignoring alpha) fully transparent ("Transparent selection").
 pub fn key_out(p: &mut Pixmap, key: Color) {
-    for px in p.data_mut().chunks_exact_mut(4) {
+    for px in p.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         let c = Color::from_premultiplied([px[0], px[1], px[2], px[3]]);
         if px[3] != 0 && c.r == key.r && c.g == key.g && c.b == key.b {
             px.fill(0);

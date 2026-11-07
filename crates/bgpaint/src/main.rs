@@ -14,6 +14,7 @@ mod i18n;
 mod platform;
 mod settings;
 mod system;
+mod tabs;
 mod theme;
 mod tools;
 mod ui;
@@ -23,7 +24,7 @@ use std::time::Instant;
 fn main() -> eframe::Result {
     let started = Instant::now();
     let settings = settings::Settings::load();
-    let open = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    let open: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(std::path::PathBuf::from).collect();
     let (w, h) = settings.window_size.unwrap_or((1280.0, 800.0));
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()

@@ -94,7 +94,7 @@ impl PaintApp {
                         d.anchors.0 = combo(ui, t, &name, 330.0, &mut d.open, Dropdown::Printer);
                         ui.add_space(8.0);
                         label(ui, tr.copies);
-                        widgets::number_field(ui, t, &mut d.copies, 1, 999, 120.0, "", Id::unique("pd-copies"));
+                        widgets::number_field(ui, t, &mut d.copies, 1..=999, 120.0, "", Id::unique("pd-copies"));
                         ui.add_space(8.0);
                     }
                     label(ui, tr.paper_size);
@@ -120,7 +120,7 @@ impl PaintApp {
                     });
                     ui.add_space(4.0);
                     label(ui, tr.margins);
-                    if widgets::number_field(ui, t, &mut d.margin, 0, 60, 120.0, "", Id::unique("pd-margin")) {
+                    if widgets::number_field(ui, t, &mut d.margin, 0..=60, 120.0, "", Id::unique("pd-margin")) {
                         d.settings.margin_mm = d.margin as f32;
                     }
                     ui.add_space(4.0);

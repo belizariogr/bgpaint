@@ -135,7 +135,7 @@ pub fn fill_region(dst: &mut Pixmap, r: PixelRect, color: Color) {
     let d = dst.data_mut();
     for y in r.y0..r.y1 {
         let row = &mut d[y as usize * w + r.x0 as usize * 4..y as usize * w + r.x1 as usize * 4];
-        for px in row.chunks_exact_mut(4) {
+        for px in row.as_chunks_mut::<4>().0.iter_mut() {
             px.copy_from_slice(&p);
         }
     }
@@ -229,7 +229,7 @@ pub fn thumbnail(src: &Pixmap, width: u32, height: u32) -> Pixmap {
     let n = 4usize;
     let s = src.data();
     let stride = src.width() as usize * 4;
-    for (i, px) in out.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, px) in out.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (dx, dy) = ((i % width as usize) as f32, (i / width as usize) as f32);
         let mut acc = [0u32; 4];
         for sy in 0..n {
@@ -251,7 +251,7 @@ pub fn thumbnail(src: &Pixmap, width: u32, height: u32) -> Pixmap {
 
 /// Clamps color channels to alpha so a filtered buffer stays a valid premultiplied image.
 pub fn fix_premultiplied(p: &mut Pixmap) {
-    for px in p.data_mut().chunks_exact_mut(4) {
+    for px in p.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         let a = px[3];
         px[0] = px[0].min(a);
         px[1] = px[1].min(a);
@@ -296,7 +296,7 @@ pub fn skew_degrees(src: &Pixmap, deg_x: f32, deg_y: f32) -> Pixmap {
 
 /// Inverts the colors of every pixel (keeps alpha).
 pub fn invert_colors(p: &mut Pixmap) {
-    for px in p.data_mut().chunks_exact_mut(4) {
+    for px in p.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         let a = px[3];
         px[0] = a - px[0];
         px[1] = a - px[1];
@@ -313,12 +313,12 @@ pub fn resize_canvas(src: &Pixmap, width: u32, height: u32, dx: i32, dy: i32) ->
 
 /// True if any pixel is not fully opaque.
 pub fn has_transparency(p: &Pixmap) -> bool {
-    p.data().chunks_exact(4).any(|px| px[3] != 255)
+    p.data().as_chunks::<4>().0.iter().any(|px| px[3] != 255)
 }
 
 /// True if every pixel is fully transparent.
 pub fn is_fully_transparent(p: &Pixmap) -> bool {
-    p.data().chunks_exact(4).all(|px| px[3] == 0)
+    p.data().as_chunks::<4>().0.iter().all(|px| px[3] == 0)
 }
 
 /// Tight bounds of the non transparent pixels.
@@ -326,9 +326,9 @@ pub fn opaque_bounds(p: &Pixmap) -> PixelRect {
     let w = p.width() as usize;
     let mut r = PixelRect::EMPTY;
     for (y, row) in p.data().chunks_exact(w * 4).enumerate() {
-        let first = row.chunks_exact(4).position(|px| px[3] != 0);
+        let first = row.as_chunks::<4>().0.iter().position(|px| px[3] != 0);
         if let Some(first) = first {
-            let last = row.chunks_exact(4).rposition(|px| px[3] != 0).unwrap_or(first);
+            let last = row.as_chunks::<4>().0.iter().rposition(|px| px[3] != 0).unwrap_or(first);
             r = r.union(&PixelRect::new(first as i32, y as i32, last as i32 + 1, y as i32 + 1));
         }
     }
@@ -343,7 +343,7 @@ pub fn to_straight_rgba(p: &Pixmap) -> Vec<u8> {
 /// Builds a premultiplied pixmap from straight-alpha RGBA bytes.
 pub fn from_straight_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Pixmap, TooLarge> {
     let mut p = try_pixmap(width, height)?;
-    for (d, s) in p.data_mut().chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+    for (d, s) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0.iter()) {
         d.copy_from_slice(&Color::rgba(s[0], s[1], s[2], s[3]).premultiplied());
     }
     Ok(p)
@@ -355,7 +355,7 @@ mod tests {
 
     fn numbered(w: u32, h: u32) -> Pixmap {
         let mut p = pixmap(w, h);
-        for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {
+        for (i, px) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px.copy_from_slice(&[i as u8, i as u8, i as u8, 255]);
         }
         p

@@ -19,7 +19,7 @@ enum Popup {
 
 impl PaintApp {
     pub fn tool_bars(&mut self, ctx: &egui::Context) {
-        if self.tool != Tool::Text || self.ui.settings_open {
+        if self.tool != Tool::Text {
             return;
         }
         let t = self.theme.clone();

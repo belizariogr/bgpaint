@@ -5,7 +5,7 @@ use super::icons::{filled as icf, regular as ic};
 use super::menu::{Entry, Preview};
 use super::menubar::MenuKind;
 use super::widgets::{self, IconButton};
-use crate::app::PaintApp;
+use crate::app::{PaintApp, Swatch};
 use crate::commands::Command;
 use crate::theme::Theme;
 use crate::tools::Tool;
@@ -17,6 +17,11 @@ use bgpaint_core::shapes::{self, ShapeKind};
 use egui::{Align2, Color32, Id, Pos2, Rect, Sense, Stroke as EStroke, pos2, vec2};
 
 pub const RIBBON_HEIGHT: f32 = 106.0;
+/// x, y, outline glyph, filled glyph, tool and tooltip of a Tools-group button.
+type ToolButton<'a> = (f32, f32, char, Option<char>, Tool, &'a str);
+
+/// Extra width of the Image group for the Undo/Redo column.
+const IMAGE_EXTRA: f32 = 36.0;
 
 /// The 20 colors of Paint's palette (two rows).
 pub const PALETTE: [u32; 20] = [
@@ -49,7 +54,16 @@ impl PaintApp {
             |ui| {
                 let r = ui.max_rect();
                 ui.painter().hline(r.x_range(), r.bottom() - 0.5, EStroke::new(1.0, t.ribbon_border));
-                ui.painter().hline(r.x_range(), r.top() + 0.5, EStroke::new(1.0, t.ribbon_border));
+                let border = EStroke::new(1.0, t.ribbon_border);
+                match self.ui.active_tab_span {
+                    Some(span) => {
+                        ui.painter().hline(r.left()..=span.min + 0.5, r.top() + 0.5, border);
+                        ui.painter().hline(span.max - 0.5..=r.right(), r.top() + 0.5, border);
+                    }
+                    None => {
+                        ui.painter().hline(r.x_range(), r.top() + 0.5, border);
+                    }
+                }
                 self.ribbon_contents(ui, &t, r);
             },
         );
@@ -137,12 +151,35 @@ impl PaintApp {
         {
             self.execute(&ctx, Command::ResizeSkew);
         }
-        group_label(ui, 145.0, tr.group_image);
-        sep(ui, 224.0);
+        // Undo / Redo, stacked.
+        for (glyph, cmd, tip, enabled, y) in [
+            (ic::UNDO, Command::Undo, tr.undo, self.history.can_undo() || !self.active.is_idle(), row1),
+            (ic::REDO, Command::Redo, tr.redo, self.history.can_redo(), row2),
+        ] {
+            if IconButton::new(glyph)
+                .enabled(enabled)
+                .tooltip(&self.tool_tooltip(&ctx, tip, Some(&cmd)))
+                .show(ui, t, btn(241.0, y), Id::unique(("rb-history", tip)))
+                .clicked()
+            {
+                self.execute(&ctx, cmd);
+            }
+        }
+        group_label(ui, 163.0, tr.group_image);
+        sep(ui, 224.0 + IMAGE_EXTRA);
+
+        // Everything after the Image group moves right by the width of the Undo/Redo column.
+        let x0 = x0 + IMAGE_EXTRA;
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let btn = |x: f32, y: f32| widgets::square(pos2(x0 + x, y), 32.0);
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
+        let sep = |ui: &egui::Ui, x: f32| widgets::vseparator(ui.painter(), t, x0 + x, top + 10.0, top + 98.0);
 
         // --- Tools ---
         let accent = t.tool_icon_fill;
-        let tools: [(f32, f32, char, Option<char>, Tool, &str); 6] = [
+        let tools: [ToolButton; 6] = [
             (252.0, row1, ic::PENCIL, Some(icf::PENCIL), Tool::Pencil, tr.pencil),
             (293.0, row1, ic::FILL, Some(icf::FILL), Tool::Fill, tr.fill),
             (333.0, row1, ic::TEXT, None, Tool::Text, tr.text),
@@ -291,8 +328,9 @@ impl PaintApp {
             }
             paint_swatch(ui.painter(), t, c, radius, color);
             let resp = resp.on_hover_text(if secondary { tr.color2 } else { tr.color1 });
-            if resp.clicked() {
+            if resp.clicked() && self.colors.editing_secondary != secondary {
                 self.colors.editing_secondary = secondary;
+                self.colors.selected = None;
             }
             if resp.double_clicked() {
                 self.execute(&ctx, Command::EditColors);
@@ -303,12 +341,12 @@ impl PaintApp {
             let (col, row) = (i % 10, i / 10);
             let c = pos2(x0 + 62.0 + col as f32 * 24.0, top + 18.0 + row as f32 * 23.5);
             let color = Color::from_hex(*hex);
-            self.palette_swatch(ui, t, c, Some(color), Id::unique(("pal", i)));
+            self.palette_swatch(ui, t, c, Some(color), Swatch::Palette(i));
         }
         for i in 0..10 {
             let c = pos2(x0 + 62.0 + i as f32 * 24.0, top + 65.0);
             let color = self.colors.custom[i];
-            self.palette_swatch(ui, t, c, color, Id::unique(("custom", i)));
+            self.palette_swatch(ui, t, c, color, Swatch::Custom(i));
         }
         // Edit colors (color wheel)
         let c = pos2(x0 + 317.0, top + 42.0);
@@ -325,34 +363,46 @@ impl PaintApp {
         }
     }
 
-    fn palette_swatch(&mut self, ui: &mut egui::Ui, t: &Theme, c: Pos2, color: Option<Color>, id: Id) {
+    fn palette_swatch(&mut self, ui: &mut egui::Ui, t: &Theme, c: Pos2, color: Option<Color>, swatch: Swatch) {
         let hit = Rect::from_center_size(c, vec2(22.0, 22.0));
-        let resp = ui.interact(hit, id, if color.is_some() { Sense::click() } else { Sense::hover() });
+        let resp = ui.interact(hit, Id::unique(("swatch", swatch)), Sense::click());
+        if self.colors.selected == Some(swatch) {
+            ui.painter().circle_stroke(c, 10.5, EStroke::new(1.5, t.accent));
+        } else if resp.hovered() {
+            ui.painter().circle_stroke(c, 10.5, EStroke::new(1.5, t.text_secondary));
+        }
         match color {
             Some(col) => {
-                if resp.hovered() {
-                    ui.painter().circle_stroke(c, 10.5, EStroke::new(1.5, t.text_secondary));
-                }
                 paint_swatch(ui.painter(), t, c, 8.0, col);
                 let resp = resp.on_hover_text(col.to_hex_string());
                 if resp.clicked() {
+                    self.colors.selected = Some(swatch);
                     self.set_active_color(col);
                 }
                 if resp.secondary_clicked() {
                     self.colors.secondary = col;
+                    self.on_colors_changed();
                 }
             }
             None => {
                 ui.painter().circle_stroke(c, 7.5, EStroke::new(1.0, t.swatch_ring));
+                // An empty custom slot can be selected and then defined with the color tools.
+                if resp.on_hover_text(self.tr.edit_colors).clicked() {
+                    self.colors.selected = Some(swatch);
+                }
             }
         }
     }
 
+    /// Sets the color being edited (Color 1 or 2). A selected custom slot takes the color too.
     pub fn set_active_color(&mut self, c: Color) {
         if self.colors.editing_secondary {
             self.colors.secondary = c;
         } else {
             self.colors.primary = c;
+        }
+        if let Some(Swatch::Custom(i)) = self.colors.selected {
+            self.colors.custom[i] = Some(c);
         }
         self.on_colors_changed();
     }

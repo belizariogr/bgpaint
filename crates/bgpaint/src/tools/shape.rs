@@ -6,11 +6,10 @@ use crate::app::PaintApp;
 use crate::canvas::view::View;
 use crate::theme::Theme;
 use crate::ui::widgets;
-use bgpaint_core::color::Color;
 use bgpaint_core::document::ActivePreview;
 use bgpaint_core::geom::{PixelRect, Point, RectF};
 use bgpaint_core::raster;
-use bgpaint_core::shapes::{self, RasterShape, ShapeKind, ShapePaint, ShapeStyle};
+use bgpaint_core::shapes::{self, RasterShape, ShapeKind, ShapePaint};
 use bgpaint_core::tiny_skia::{Path, Pixmap, Transform};
 use egui::{Modifiers, PointerButton, Pos2};
 use std::time::Instant;
@@ -142,43 +141,43 @@ impl PaintApp {
         let tol = 6.0 / self.view.scale();
         let rotate_off = 24.0 / self.view.scale();
         // Interact with the shape being edited.
-        if let super::interaction::Active::Shape(op) = &mut self.active {
-            if button == PointerButton::Primary {
-                if let Geom::PolygonDraft { points } = &mut op.geom {
-                    let close = points.len() > 2 && points.first().is_some_and(|f| f.distance(p) <= tol * 1.5);
-                    let double = op.last_click.is_some_and(|(t, q)| t.elapsed().as_millis() < 450 && q.distance(p) <= tol * 2.0);
-                    if close || double {
-                        finish_polygon(op);
-                        let d = op.update();
-                        self.preview_dirty.add(d);
+        if let super::interaction::Active::Shape(op) = &mut self.active
+            && button == PointerButton::Primary
+        {
+            if let Geom::PolygonDraft { points } = &mut op.geom {
+                let close = points.len() > 2 && points.first().is_some_and(|f| f.distance(p) <= tol * 1.5);
+                let double = op.last_click.is_some_and(|(t, q)| t.elapsed().as_millis() < 450 && q.distance(p) <= tol * 2.0);
+                if close || double {
+                    finish_polygon(op);
+                    let d = op.update();
+                    self.preview_dirty.add(d);
+                } else {
+                    points.push(p);
+                    op.last_click = Some((Instant::now(), p));
+                    op.drag = Some(Drag::PolyPoint);
+                    let d = op.update();
+                    self.preview_dirty.add(d);
+                }
+                return;
+            }
+            let hit = match &op.geom {
+                Geom::Box { geom, .. } => geom.hit(p, tol, rotate_off).map(|h| Drag::Box(h, p, *geom)),
+                Geom::Line { a, b } => {
+                    if a.distance(p) <= tol * 1.5 {
+                        Some(Drag::Endpoint(false))
+                    } else if b.distance(p) <= tol * 1.5 {
+                        Some(Drag::Endpoint(true))
                     } else {
-                        points.push(p);
-                        op.last_click = Some((Instant::now(), p));
-                        op.drag = Some(Drag::PolyPoint);
-                        let d = op.update();
-                        self.preview_dirty.add(d);
+                        let g = BoxGeom { rect: RectF::from_points(*a, *b), angle: 0.0 };
+                        near_segment(*a, *b, p, tol + op.paint.width).then_some(Drag::Box(BoxHit::Inside, p, g))
                     }
-                    return;
                 }
-                let hit = match &op.geom {
-                    Geom::Box { geom, .. } => geom.hit(p, tol, rotate_off).map(|h| Drag::Box(h, p, geom.clone())),
-                    Geom::Line { a, b } => {
-                        if a.distance(p) <= tol * 1.5 {
-                            Some(Drag::Endpoint(false))
-                        } else if b.distance(p) <= tol * 1.5 {
-                            Some(Drag::Endpoint(true))
-                        } else {
-                            let g = BoxGeom { rect: RectF::from_points(*a, *b), angle: 0.0 };
-                            near_segment(*a, *b, p, tol + op.paint.width).then_some(Drag::Box(BoxHit::Inside, p, g))
-                        }
-                    }
-                    Geom::Curve { stage, .. } if *stage < 2 => Some(Drag::Bend(*stage + 1)),
-                    _ => None,
-                };
-                if let Some(h) = hit {
-                    op.drag = Some(h);
-                    return;
-                }
+                Geom::Curve { stage, .. } if *stage < 2 => Some(Drag::Bend(*stage + 1)),
+                _ => None,
+            };
+            if let Some(h) = hit {
+                op.drag = Some(h);
+                return;
             }
         }
         self.commit_interaction();
@@ -288,11 +287,11 @@ impl PaintApp {
     }
 
     pub fn commit_shape(&mut self, mut op: ShapeOp) {
-        if let Geom::PolygonDraft { points } = &op.geom {
-            if points.len() >= 2 {
-                finish_polygon(&mut op);
-                op.update();
-            }
+        if let Geom::PolygonDraft { points } = &op.geom
+            && points.len() >= 2
+        {
+            finish_polygon(&mut op);
+            op.update();
         }
         let Some(r) = op.raster.take() else { return };
         let bounds = r.bounds();
@@ -389,6 +388,8 @@ pub fn paint_overlay(op: &ShapeOp, view: &View, painter: &egui::Painter, t: &The
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bgpaint_core::color::Color;
+    use bgpaint_core::shapes::ShapeStyle;
 
     #[test]
     fn snapping() {

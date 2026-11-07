@@ -11,7 +11,7 @@ use crate::ui::dialogs::Modal;
 use crate::ui::menubar::MenuKind;
 use bgpaint_core::color::Color;
 use bgpaint_core::document::{DEFAULT_HEIGHT, DEFAULT_WIDTH, Document};
-use bgpaint_core::geom::{DirtyRect, Point};
+use bgpaint_core::geom::DirtyRect;
 use bgpaint_core::history::History;
 use std::time::Instant;
 
@@ -23,11 +23,26 @@ pub struct Colors {
     /// Which swatch the palette writes to (false = Color 1).
     pub editing_secondary: bool,
     pub custom: [Option<Color>; 10],
+    /// The palette swatch last clicked. A selected custom slot follows the active color,
+    /// so it can be redefined with "Edit colors" or the color picker.
+    pub selected: Option<Swatch>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Swatch {
+    Palette(usize),
+    Custom(usize),
 }
 
 impl Default for Colors {
     fn default() -> Self {
-        Self { primary: Color::BLACK, secondary: Color::WHITE, editing_secondary: false, custom: [None; 10] }
+        Self { primary: Color::BLACK, secondary: Color::WHITE, editing_secondary: false, custom: [None; 10], selected: None }
+    }
+}
+
+impl Colors {
+    pub fn active(&self) -> Color {
+        if self.editing_secondary { self.secondary } else { self.primary }
     }
 }
 
@@ -37,7 +52,6 @@ pub struct UiState {
     /// Screen rect of the button that opened the menu (clicking it again closes the menu).
     pub menu_anchor: egui::Rect,
     pub show_layers: bool,
-    pub settings_open: bool,
     pub fullscreen: bool,
     pub thumbnail: bool,
     pub modal: Option<Modal>,
@@ -45,6 +59,9 @@ pub struct UiState {
     pub ribbon_revealed: bool,
     /// The user manually collapsed the toolbar with the chevron.
     pub ribbon_collapsed: bool,
+    /// Horizontal extent of the active tab, where the toolbar's top border is left open so
+    /// the tab and the toolbar read as one surface.
+    pub active_tab_span: Option<egui::Rangef>,
 }
 
 impl Default for UiState {
@@ -53,12 +70,12 @@ impl Default for UiState {
             open_menu: None,
             menu_anchor: egui::Rect::NOTHING,
             show_layers: false,
-            settings_open: false,
             fullscreen: false,
             thumbnail: false,
             modal: None,
             ribbon_revealed: false,
             ribbon_collapsed: false,
+            active_tab_span: None,
         }
     }
 }
@@ -71,6 +88,7 @@ pub struct Status {
 }
 
 pub struct PaintApp {
+    /// The active document (see [`crate::tabs`]).
     pub doc: Document,
     pub history: History,
     pub file: FileState,
@@ -98,12 +116,16 @@ pub struct PaintApp {
     pub text_settings: crate::tools::text::TextSettings,
     pub print_settings: crate::platform::PrintSettings,
     pub thumbs: crate::ui::layers::Thumbnails,
+    /// The other open documents.
+    pub tabs: Vec<crate::tabs::DocTab>,
+    /// Position of the active document in the tab strip.
+    pub current_tab: usize,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
 }
 
 impl PaintApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, open: Option<std::path::PathBuf>, started: Instant) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, open: Vec<std::path::PathBuf>, started: Instant) -> Self {
         crate::theme::install_fonts(&cc.egui_ctx);
         let mut colors = Colors::default();
         for (slot, hex) in colors.custom.iter_mut().zip(&settings.custom_colors) {
@@ -136,12 +158,14 @@ impl PaintApp {
             text_settings: Default::default(),
             print_settings: Default::default(),
             thumbs: Default::default(),
+            tabs: Vec::new(),
+            current_tab: 0,
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(),
         };
         app.sync_theme(&cc.egui_ctx);
         crate::tools::text::preload_fonts();
-        if let Some(path) = open {
+        for path in open {
             app.open_path(&cc.egui_ctx, path);
         }
         app
@@ -193,7 +217,7 @@ impl PaintApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.ui.modal.is_some() || self.ui.settings_open || ctx.egui_wants_keyboard_input() {
+        if self.ui.modal.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
         let mut fired = Vec::new();
@@ -219,7 +243,7 @@ impl PaintApp {
 
     fn handle_close_request(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
-            if self.modified() {
+            if self.any_modified() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm_unsaved(crate::files::Pending::Exit);
             } else {
@@ -291,21 +315,17 @@ impl eframe::App for PaintApp {
         self.text_keyboard(&ctx);
         self.handle_shortcuts(&ctx);
 
-        if self.ui.settings_open {
-            self.settings_page(ui);
-        } else {
-            self.menubar(ui);
-            self.ribbon_panel(ui);
-            self.tool_bars(&ctx);
-            if self.settings.show_status_bar {
-                self.statusbar(ui);
-            }
-            if self.ui.show_layers {
-                self.layers_panel(ui);
-            }
-            self.canvas_panel(ui);
-            self.open_menus(&ctx);
+        self.menubar(ui);
+        self.ribbon_panel(ui);
+        self.tool_bars(&ctx);
+        if self.settings.show_status_bar {
+            self.statusbar(ui);
         }
+        if self.ui.show_layers {
+            self.layers_panel(ui);
+        }
+        self.canvas_panel(ui);
+        self.open_menus(&ctx);
         self.modals(&ctx);
         self.paint_toast(&ctx);
         self.update_title(&ctx);
@@ -334,9 +354,4 @@ impl eframe::App for PaintApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         self.theme.window_bg.to_normalized_gamma_f32()
     }
-}
-
-/// Helper used by tools to convert a pointer position to canvas coordinates.
-pub fn canvas_point(view: &View, p: egui::Pos2) -> Point {
-    view.to_canvas(p)
 }
