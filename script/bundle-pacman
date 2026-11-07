@@ -24,9 +24,12 @@ tarball="$(source "$src/PKGBUILD" && echo "${source[0]}")"
 cp "$src/$tarball" "$temp/"
 
 # cargo-packager derives the name from product-name (`bg-paint`); the package
-# is `bgpaint`, like the binary, the .deb and the AUR convention.
+# is `bgpaint`, like the binary, the .deb and the AUR convention. A pkgver
+# cannot hold `-`: 1.0.0-beta.1 becomes 1.0.0beta.1, which pacman sorts
+# before 1.0.0.
 sed -i \
     -e 's/^pkgname=.*/pkgname=bgpaint/' \
+    -e '/^pkgver=/ s/-//g' \
     -e "s/^conflicts=.*/conflicts=('bg-paint')/" \
     -e "s/^replaces=.*/replaces=('bg-paint')/" \
     -e "s/^options=.*/options=('!lto' '!debug' '!strip')\nlicense=('MIT')/" \

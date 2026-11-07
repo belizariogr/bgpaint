@@ -20,6 +20,7 @@ on:
       - script/bundle-linux
       - script/bundle-macos-dmg
       - script/bundle-pacman
+      - script/bundle-rpm
       - script/install.sh
   workflow_dispatch:
     inputs:
@@ -367,9 +368,33 @@ jobs:
           if-no-files-found: error
           path: pacman/*.pkg.tar.zst
 
+  # The .rpm (Fedora, openSUSE…), made from the tarball script/bundle-linux wrote.
+  rpm:
+    name: Package (rpm)
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: BGPaint-linux-x86_64
+          path: linux
+      - name: Build the rpm package
+        run: |
+          dnf install -y rpm-build
+          script/bundle-rpm linux/target/release/bgpaint-linux-x86_64.tar.gz rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BGPaint-rpm
+          if-no-files-found: error
+          path: rpm/*.rpm
+
   release:
     name: GitHub Release
-    needs: [prepare, package, pacman]
+    needs: [prepare, package, pacman, rpm]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:

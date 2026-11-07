@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Builds the .rpm (Fedora, openSUSE, RHEL…) from the release tarball that
+# script/bundle-linux writes: bgpaint-<version>-1.<arch>.rpm. Needs rpmbuild.
+
+set -euo pipefail
+
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "Usage: ${0##*/} <bgpaint-linux-<arch>.tar.gz> <output dir> [version]" >&2
+    echo "The version defaults to the one in Cargo.toml." >&2
+    exit 1
+fi
+
+tarball="$(realpath "$1")"
+mkdir -p "$2"
+out="$(realpath "$2")"
+cd "$(dirname "$0")/.."
+
+version="${3:-$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' Cargo.toml)}"
+version="${version#v}"
+# RPM versions cannot hold `-`; `~` sorts a prerelease before its release.
+version="${version//-/\~}"
+
+temp="$(mktemp -d)"
+trap 'rm -rf "$temp"' EXIT
+tar -xzf "$tarball" -C "$temp"
+tree="$temp/bgpaint.app"
+[[ -x "$tree/bin/bgpaint" ]] || {
+    echo "error: $tarball has no bgpaint.app/bin/bgpaint" >&2
+    exit 1
+}
+
+# winit/glutin dlopen these at run time, so rpm's automatic dependencies (from
+# the linked libraries) miss them. Sonames, not package names: they hold on
+# Fedora and openSUSE alike.
+cat > "$temp/bgpaint.spec" <<SPEC
+%global debug_package %{nil}
+%global _build_id_links none
+%global __os_install_post %{nil}
+
+Name:           bgpaint
+Version:        $version
+Release:        1
+Summary:        A fast, native clone of Windows 11 Paint
+License:        MIT
+URL:            https://github.com/belizariogr/bgpaint
+Requires:       libGL.so.1()(64bit)
+Requires:       libEGL.so.1()(64bit)
+Requires:       libX11.so.6()(64bit)
+Requires:       libXcursor.so.1()(64bit)
+Requires:       libXrandr.so.2()(64bit)
+Requires:       libXi.so.6()(64bit)
+Requires:       libxkbcommon.so.0()(64bit)
+Requires:       libxkbcommon-x11.so.0()(64bit)
+Requires:       libwayland-client.so.0()(64bit)
+Requires:       libwayland-cursor.so.0()(64bit)
+Requires:       libwayland-egl.so.1()(64bit)
+
+%description
+BGPaint is a fast, native clone of Windows 11 Paint for Linux and macOS, written
+in Rust: the same layout, layers, light and dark themes, and support for PNG,
+JPEG, GIF, BMP, TIFF, WebP, SVG, OpenRaster and more.
+
+%install
+mkdir -p %{buildroot}/usr
+cp -a "$tree/bin" "$tree/share" %{buildroot}/usr/
+
+%files
+/usr/bin/bgpaint
+/usr/share/applications/io.github.belizariogr.bgpaint.desktop
+/usr/share/icons/hicolor/*/apps/bgpaint.*
+SPEC
+
+rpmbuild -bb --quiet \
+    --define "_topdir $temp/rpmbuild" \
+    --define "_rpmdir $out" \
+    --define "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
+    "$temp/bgpaint.spec"
+ls "$out"/bgpaint-*.rpm

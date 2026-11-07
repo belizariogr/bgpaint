@@ -23,7 +23,30 @@ cargo build --release
 
 On Linux you need the usual windowing headers (`libxkbcommon`, `wayland`, `libGL`).
 
-## Install / Build packages
+## Install
+
+On Linux, paste this into a terminal:
+
+```sh
+curl -fsSL https://github.com/belizariogr/bgpaint/releases/latest/download/install.sh | sh
+```
+
+It finds your distro's package manager and installs the matching package from the
+latest release, system-wide (asks for your password through `sudo`):
+
+| Distro | Package |
+|---|---|
+| Arch, Manjaro, EndeavourOS… | `.pkg.tar.zst` (pacman) |
+| Debian, Ubuntu, Mint, Pop!_OS… | `.deb` (apt) |
+| Fedora, RHEL, openSUSE… | `.rpm` (dnf, zypper) |
+| anything else, or no `sudo` | the binary, into `~/.local` (no root) |
+
+`BGPAINT_INSTALL=local` keeps it in `~/.local` on any distro, and `BGPAINT_VERSION=v0.6.0`
+picks a release, e.g. `curl -fsSL …/install.sh | BGPAINT_INSTALL=local sh`. Without `curl`,
+use `wget -qO- <same URL> | sh`. On macOS, download the `.dmg` from the
+[releases page](https://github.com/belizariogr/bgpaint/releases/latest).
+
+## Build packages
 
 Releases are built by GitHub Actions (`.github/workflows/release.yml`): run the
 **Release** workflow by hand (Actions ▸ Release ▸ Run workflow) and it bumps the
@@ -34,26 +57,21 @@ Release. Pushing a `v*` tag yourself makes a draft release instead.
 | OS | Packages |
 |---|---|
 | macOS (Apple silicon, Intel) | `BGPaint.app` inside a `.dmg` (min. macOS 10.15.7) |
-| Linux x86_64 | `.deb`, `.AppImage`, pacman `.pkg.tar.zst` (plus its `.tar.gz` + `PKGBUILD`), and the `bgpaint-linux-x86_64.tar.gz` that `install.sh` unpacks |
+| Linux x86_64 | `.deb`, `.rpm`, `.AppImage`, pacman `.pkg.tar.zst` (plus its `.tar.gz` + `PKGBUILD`), and the `bgpaint-linux-x86_64.tar.gz` that `install.sh` unpacks |
 
 macOS builds are signed with a Developer ID certificate and notarized (the
 `.app` and the `.dmg`) when the `APPLE_*` repository secrets are set; without
 them the packages are still built, unsigned.
 
-On Arch Linux, install (or update) the release package with pacman:
-
-```sh
-sudo pacman -U https://github.com/belizariogr/bgpaint/releases/download/v<version>/bgpaint-<version>-1-x86_64.pkg.tar.zst
-```
-
-It is made by `script/bundle-pacman <dir with PKGBUILD and tarball> <out dir>`
-(needs `makepkg`) from cargo-packager's pacman output.
+cargo-packager has no `.rpm` and writes only a `PKGBUILD` for pacman, so two more
+scripts make those: `script/bundle-pacman <dir with PKGBUILD and tarball> <out dir>`
+(needs `makepkg`) and `script/bundle-rpm <bgpaint-linux-x86_64.tar.gz> <out dir>`
+(needs `rpmbuild`).
 
 On Linux, these scripts install without a package manager. Only the
 system-wide one needs root:
 
 ```sh
-curl -fL https://github.com/belizariogr/bgpaint/releases/latest/download/install.sh | sh  # latest release, into ~/.local
 script/install-linux                    # build this checkout, into ~/.local
 script/install-linux-system             # build this checkout, into /usr (asks for sudo)
 script/uninstall.sh                     # remove the ~/.local install; asks before deleting settings
