@@ -11,6 +11,8 @@ mod clipboard;
 mod commands;
 mod files;
 mod i18n;
+#[cfg(target_os = "macos")]
+mod mac_menu;
 mod platform;
 mod settings;
 mod system;
@@ -42,6 +44,12 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Glow,
         centered: true,
         system_font_fallback: false,
+        // On macOS the app installs its own menu bar (see `mac_menu`).
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(|builder| {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+            builder.with_default_menu(false);
+        })),
         ..Default::default()
     };
     eframe::run_native("bgpaint", options, Box::new(move |cc| Ok(Box::new(app::PaintApp::new(cc, settings, open, started)))))

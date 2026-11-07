@@ -25,3 +25,9 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pollster.workspace = true
+
+# The global menu bar.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21.2", default-features = false }
+# Only to turn off winit's default menu (same version as eframe uses).
+winit = { version = "0.30.13", default-features = false }

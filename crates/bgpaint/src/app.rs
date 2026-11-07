@@ -130,6 +130,9 @@ pub struct PaintApp {
     pub return_to_tab: Option<u64>,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
+    /// The global menu bar on macOS.
+    #[cfg(target_os = "macos")]
+    native_menu: Option<crate::mac_menu::NativeMenu>,
 }
 
 impl PaintApp {
@@ -174,7 +177,13 @@ impl PaintApp {
             return_to_tab: None,
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(),
+            #[cfg(target_os = "macos")]
+            native_menu: None,
         };
+        #[cfg(target_os = "macos")]
+        {
+            app.native_menu = Some(crate::mac_menu::NativeMenu::install(&app, &cc.egui_ctx));
+        }
         app.sync_theme(&cc.egui_ctx);
         crate::tools::text::preload_fonts();
         for path in open {
@@ -321,6 +330,11 @@ impl eframe::App for PaintApp {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx);
         self.handle_dropped_files(&ctx);
+        #[cfg(target_os = "macos")]
+        if let Some(mut menu) = self.native_menu.take() {
+            menu.update(self, &ctx);
+            self.native_menu = Some(menu);
+        }
         self.poll_async(&ctx);
         self.handle_close_request(&ctx);
         self.selection_keys(&ctx);

@@ -49,9 +49,13 @@ impl PaintApp {
                 let r = ui.max_rect();
                 let cy = r.center().y;
                 let mut x = r.left() + 4.0;
-                for (kind, text) in
-                    [(MenuKind::File, self.tr.menu_file), (MenuKind::Edit, self.tr.menu_edit), (MenuKind::View, self.tr.menu_view)]
-                {
+                // On macOS these menus live in the global menu bar (see `mac_menu`).
+                let in_window_menus: &[(MenuKind, &str)] = if cfg!(target_os = "macos") {
+                    &[]
+                } else {
+                    &[(MenuKind::File, self.tr.menu_file), (MenuKind::Edit, self.tr.menu_edit), (MenuKind::View, self.tr.menu_view)]
+                };
+                for &(kind, text) in in_window_menus {
                     let w = widgets::text_width(ui, text, egui::FontId::proportional(14.0)) + 20.0;
                     let rect = Rect::from_min_size(pos2(x, cy - 16.0), vec2(w, 32.0));
                     let resp = ui.interact(rect, Id::unique(("menubar", text)), Sense::click());
@@ -71,8 +75,10 @@ impl PaintApp {
                     }
                     x += w + 2.0;
                 }
-                widgets::vseparator(ui.painter(), &t, x + 6.0, cy - 10.0, cy + 10.0);
-                x += 14.0;
+                if !in_window_menus.is_empty() {
+                    widgets::vseparator(ui.painter(), &t, x + 6.0, cy - 10.0, cy + 10.0);
+                    x += 14.0;
+                }
                 let quick = [(ic::SAVE, Command::Save, self.tr.save, true), (ic::SHARE, Command::Share, self.tr.share, true)];
                 for (glyph, cmd, tip, enabled) in quick {
                     let rect = Rect::from_min_size(pos2(x, cy - 16.0), vec2(36.0, 32.0));
