@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=BGPaint
+GenericName=Image Editor
+GenericName[pt_BR]=Editor de imagens
+Comment=A fast clone of Microsoft Paint for Linux and macOS
+Comment[pt_BR]=Um clone rápido do Microsoft Paint para Linux e macOS
+Exec=bgpaint %F
+Icon=bgpaint
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=paint;draw;image;picture;editor;mspaint;
+MimeType=image/png;image/jpeg;image/bmp;image/gif;image/tiff;image/webp;image/svg+xml;image/x-icon;image/vnd.microsoft.icon;image/x-tga;image/x-portable-anymap;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/openraster;
+StartupNotify=true
+StartupWMClass=io.github.belizariogr.bgpaint

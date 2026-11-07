@@ -15,6 +15,8 @@ use egui::{Align2, Color32, CursorIcon, Id, Rect, Sense, Stroke, Vec2, pos2, vec
 
 const RULER: f32 = 20.0;
 const SCROLLBAR: f32 = 12.0;
+/// Right edge of the floating size/opacity bar, measured from the left of the canvas area.
+const SIZE_BAR_RIGHT: f32 = 12.0 + 38.0;
 
 impl PaintApp {
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui) {
@@ -28,6 +30,8 @@ impl PaintApp {
             }
             let ctx = ui.ctx().clone();
             let ppp = ctx.pixels_per_point();
+            // Keep the canvas clear of the floating size bar (see `size_panel`).
+            self.view.left_inset = (SIZE_BAR_RIGHT - if self.settings.show_rulers { RULER } else { 0.0 }).max(0.0);
             self.view.layout(viewport, (self.doc.width(), self.doc.height()), ppp);
 
             let resp = ui.interact(viewport, Id::unique("canvas"), Sense::click_and_drag());
@@ -125,16 +129,10 @@ impl PaintApp {
         }
     }
 
-    /// What shows through transparent pixels (only when the background is hidden): a
-    /// checkerboard, or plain white when the user turned it off.
+    /// The checkerboard behind transparent pixels, shown while the background is hidden.
     fn paint_transparency(&mut self, ctx: &egui::Context, painter: &egui::Painter, rect: Rect, t: &Theme) {
-        if self.doc.background().visible {
-            return;
-        }
-        if self.settings.show_checkerboard {
+        if !self.doc.background().visible {
             self.checker.paint(ctx, painter, rect, [t.checker_a, t.checker_b]);
-        } else {
-            painter.rect_filled(rect, 0, Color32::WHITE);
         }
     }
 
@@ -292,7 +290,7 @@ impl PaintApp {
     }
 
     fn scrollbars(&mut self, ui: &mut egui::Ui, t: &Theme, viewport: Rect) {
-        let content = self.view.canvas_size_points() + Vec2::splat(view::MARGIN * 2.0);
+        let content = self.view.canvas_size_points() + Vec2::splat(view::MARGIN * 2.0) + vec2(self.view.left_inset, 0.0);
         for vertical in [false, true] {
             let axis = usize::from(vertical);
             let (vsize, csize) = (viewport.size()[axis], content[axis]);
@@ -309,7 +307,7 @@ impl PaintApp {
             let hot = resp.hovered() || resp.dragged();
             let len = track.size()[axis];
             let thumb_len = (len * vsize / csize).max(24.0);
-            let scrolled = view::MARGIN - self.view.offset[axis];
+            let scrolled = view::MARGIN + self.view.lead(axis) - self.view.offset[axis];
             let max_scroll = csize - vsize;
             let pos = (scrolled / max_scroll).clamp(0.0, 1.0) * (len - thumb_len);
             if resp.dragged() {

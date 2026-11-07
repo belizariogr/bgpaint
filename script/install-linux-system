@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<USAGE
+Usage: ${0##*/} [--uninstall]
+
+Builds BGPaint in release mode and installs it system-wide:
+
+  \$PREFIX/bin/bgpaint                   App (default: /usr/bin/bgpaint)
+  \$PREFIX/share/applications/           Desktop entry
+  \$PREFIX/share/icons/hicolor/          App icons
+
+--uninstall removes those files. Your settings in ~/.config/bgpaint are never
+touched.
+
+Privileges are requested before building, and kept fresh while it runs, so the
+install step does not wait for a password after a long build.
+
+Environment:
+  PREFIX          Install prefix (default: /usr)
+  SUDO            Privilege helper (default: sudo; unused as root)
+  BGPAINT_BINARY  Package this binary instead of building
+
+Build dependencies are listed in the README.
+USAGE
+}
+
+uninstall=false
+case "${1:-}" in
+    "") ;;
+    --uninstall) uninstall=true ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        usage >&2
+        exit 1
+        ;;
+esac
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+PREFIX="${PREFIX:-/usr}"
+sizes=(16 32 48 64 128 256 512)
+name="io.github.belizariogr.bgpaint.desktop"
+desktop="$PREFIX/share/applications/$name"
+svg="share/icons/hicolor/scalable/apps/bgpaint.svg"
+
+if [[ $EUID -eq 0 ]]; then
+    privileged=()
+else
+    SUDO="${SUDO:-sudo}"
+    if ! command -v "$SUDO" >/dev/null 2>&1; then
+        echo "error: '$SUDO' not found. Install as root or set SUDO." >&2
+        exit 1
+    fi
+    privileged=("$SUDO")
+fi
+
+refresh_caches() {
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        "${privileged[@]}" gtk-update-icon-cache -f "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        "${privileged[@]}" update-desktop-database "$PREFIX/share/applications" >/dev/null 2>&1 || true
+    fi
+}
+
+if [[ "$uninstall" == true ]]; then
+    "${privileged[@]}" rm -f "$PREFIX/bin/bgpaint" "$desktop" "$PREFIX/$svg"
+    for size in "${sizes[@]}"; do
+        "${privileged[@]}" rm -f "$PREFIX/share/icons/hicolor/${size}x${size}/apps/bgpaint.png"
+    done
+    refresh_caches
+    echo "BGPaint has been removed from $PREFIX."
+    echo "Your settings are still in ~/.config/bgpaint"
+    exit 0
+fi
+
+if [[ -z "${BGPAINT_BINARY:-}" ]] && ! command -v cargo >/dev/null 2>&1; then
+    if [[ -f "$HOME/.cargo/env" ]]; then
+        # shellcheck source=/dev/null
+        source "$HOME/.cargo/env"
+    fi
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "error: cargo not found. Install Rust with rustup, then retry." >&2
+        exit 1
+    fi
+fi
+
+cleanup() {
+    if [[ -n "${sudo_keepalive_pid:-}" ]]; then
+        kill "$sudo_keepalive_pid" 2>/dev/null || true
+    fi
+    if [[ -n "${temp_dir:-}" ]]; then
+        rm -rf "$temp_dir"
+    fi
+}
+trap cleanup EXIT
+
+if [[ "${SUDO:-}" == sudo* || "${SUDO:-}" == */sudo* ]]; then
+    echo "==> Requesting privileges for the install step"
+    "$SUDO" -v
+    # The build can outlast sudo's credential timeout, so refresh it until the
+    # script exits.
+    while kill -0 "$$" 2>/dev/null; do
+        "$SUDO" -n -v 2>/dev/null || true
+        sleep 50
+    done &
+    sudo_keepalive_pid=$!
+fi
+
+echo "==> Building BGPaint in release mode"
+script/bundle-linux
+
+temp_dir="$(mktemp -d)"
+tar -xzf "${CARGO_TARGET_DIR:-target}/release/bgpaint-linux-$(uname -m).tar.gz" -C "$temp_dir"
+app="$temp_dir/bgpaint.app"
+
+icon="$PREFIX/share/icons/hicolor/512x512/apps/bgpaint.png"
+# Absolute paths: the prefix may not be on PATH, and the launcher shows the
+# icon even before icon caches refresh.
+sed -i -e "s|^Exec=bgpaint|Exec=$PREFIX/bin/bgpaint|" -e "s|^Icon=bgpaint|Icon=$icon|" \
+    "$app/share/applications/$name"
+
+echo "==> Installing into $PREFIX"
+"${privileged[@]}" install -Dm755 "$app/bin/bgpaint" "$PREFIX/bin/bgpaint"
+"${privileged[@]}" install -Dm644 "$app/share/applications/$name" "$desktop"
+for size in "${sizes[@]}"; do
+    path="share/icons/hicolor/${size}x${size}/apps/bgpaint.png"
+    "${privileged[@]}" install -Dm644 "$app/$path" "$PREFIX/$path"
+done
+"${privileged[@]}" install -Dm644 "$app/$svg" "$PREFIX/$svg"
+refresh_caches
+
+if [[ -e "$HOME/.local/share/applications/$name" ]]; then
+    echo "Note: ~/.local has its own BGPaint install, whose launcher entry takes precedence."
+    echo "      Remove it with script/uninstall.sh"
+fi
+
+echo
+echo "Installed:"
+echo "  $PREFIX/bin/bgpaint"
+echo "  $desktop"
+echo "  $icon"
+echo
+echo "Run with: bgpaint"

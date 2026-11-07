@@ -243,7 +243,6 @@ impl PaintApp {
                 Entry::Separator,
                 item(None, tr.rulers, Command::ToggleRulers).checked(self.settings.show_rulers),
                 item(None, tr.gridlines, Command::ToggleGrid).checked(self.settings.show_grid),
-                item(None, tr.checkerboard, Command::ToggleCheckerboard).checked(self.settings.show_checkerboard),
                 Entry::item(None, tr.status_bar, Command::ToggleStatusBar).checked(self.settings.show_status_bar),
                 Entry::Separator,
                 Entry::item(None, tr.always_show_toolbar, Command::SetAutoHideToolbar(false)).checked(!self.settings.auto_hide_toolbar),

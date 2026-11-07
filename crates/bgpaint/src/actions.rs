@@ -99,10 +99,6 @@ impl PaintApp {
                 self.settings.show_rulers = !self.settings.show_rulers;
                 self.settings.save();
             }
-            Command::ToggleCheckerboard => {
-                self.settings.show_checkerboard = !self.settings.show_checkerboard;
-                self.settings.save();
-            }
             Command::ToggleGrid => {
                 self.settings.show_grid = !self.settings.show_grid;
                 self.settings.save();

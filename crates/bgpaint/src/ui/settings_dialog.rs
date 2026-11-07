@@ -13,8 +13,6 @@ impl PaintApp {
     pub fn settings_dialog(&mut self, ctx: &egui::Context, t: &Theme) {
         let tr = self.tr;
         let mut theme = self.settings.theme;
-        let mut checker = self.settings.show_checkerboard;
-        let mut checker_changed = false;
         let r = dialog(ctx, t, "settings-dialog", tr.settings, 420.0, (tr.close, None, None), |ui| {
             dialogs::section(ui, t, tr.app_theme);
             for (mode, label) in
@@ -23,11 +21,6 @@ impl PaintApp {
                 if widgets::radio(ui, t, theme == mode, label).clicked() {
                     theme = mode;
                 }
-            }
-            ui.add_space(6.0);
-            dialogs::section(ui, t, tr.canvas_section);
-            if widgets::checkbox(ui, t, &mut checker, tr.checkerboard).clicked() {
-                checker_changed = true;
             }
             ui.add_space(10.0);
             let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
@@ -56,9 +49,6 @@ impl PaintApp {
             });
             ui.add_space(8.0);
         });
-        if checker_changed {
-            self.execute(ctx, crate::commands::Command::ToggleCheckerboard);
-        }
         if theme != self.settings.theme {
             self.set_theme_mode(ctx, theme);
         }

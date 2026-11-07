@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Builds the release tarball that script/install.sh unpacks into ~/.local.
+# Layout: bgpaint.app/{bin/bgpaint, share/applications, share/icons/hicolor}.
+# Set BGPAINT_BINARY to package an existing binary instead of building.
+
+set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+    echo "Usage: ${0##*/}"
+    echo "Writes \${CARGO_TARGET_DIR:-target}/release/bgpaint-linux-<arch>.tar.gz"
+    exit 1
+fi
+
+cd "$(dirname "$0")/.."
+
+target_dir="${CARGO_TARGET_DIR:-target}"
+binary="${BGPAINT_BINARY:-}"
+if [[ -z "$binary" ]]; then
+    cargo build --release -p bgpaint
+    binary="$target_dir/release/bgpaint"
+fi
+
+temp="$(mktemp -d)"
+trap 'rm -rf "$temp"' EXIT
+app="$temp/bgpaint.app"
+mkdir -p "$app/bin" "$app/share/applications" "$app/share/icons/hicolor/scalable/apps"
+install -m 755 "$binary" "$app/bin/bgpaint"
+
+for size in 16 32 48 64 128 256 512; do
+    icons="$app/share/icons/hicolor/${size}x${size}/apps"
+    mkdir -p "$icons"
+    cp "crates/bgpaint/assets/icon-$size.png" "$icons/bgpaint.png"
+done
+cp crates/bgpaint/assets/icon.svg "$app/share/icons/hicolor/scalable/apps/bgpaint.svg"
+
+# The desktop file is named after the app id, so compositors match windows to it.
+cp crates/bgpaint/packaging/linux/io.github.belizariogr.bgpaint.desktop "$app/share/applications/"
+
+archive="$target_dir/release/bgpaint-linux-$(uname -m).tar.gz"
+mkdir -p "$(dirname "$archive")"
+tar -czf "$archive" -C "$temp" bgpaint.app
+echo "$archive"

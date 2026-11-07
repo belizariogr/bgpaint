@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Builds BGPaint from this checkout and installs it into ~/.local, available as
+# ~/.local/bin/bgpaint. Build dependencies are listed in the README.
+
+set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+    echo "Usage: ${0##*/}"
+    exit 1
+fi
+
+cd "$(dirname "$0")/.."
+
+script/bundle-linux
+BGPAINT_BUNDLE_PATH="${CARGO_TARGET_DIR:-target}/release/bgpaint-linux-$(uname -m).tar.gz" \
+    script/install.sh

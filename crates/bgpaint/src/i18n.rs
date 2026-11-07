@@ -58,8 +58,6 @@ strings! {
     fit_to_window: "Fit to window", "Ajustar à janela";
     rulers: "Rulers", "Réguas";
     gridlines: "Gridlines", "Linhas de grade";
-    checkerboard: "Transparency checkerboard", "Transparência em xadrez";
-    canvas_section: "Canvas", "Tela";
     status_bar: "Status bar", "Barra de status";
     always_show_toolbar: "Always show toolbar", "Sempre mostrar a barra de ferramentas";
     auto_hide_toolbar: "Automatically hide toolbar", "Ocultar a barra de ferramentas automaticamente";

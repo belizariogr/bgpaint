@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Exercises bundle-linux → install.sh → uninstall.sh with a dummy binary and a
+# throwaway HOME. No build, no network, nothing touched outside a temp dir.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+temp="$(mktemp -d)"
+trap 'rm -rf "$temp"' EXIT
+home="$temp/home"
+mkdir -p "$home"
+name="io.github.belizariogr.bgpaint.desktop"
+
+fail() {
+    echo "FAIL: $1" >&2
+    exit 1
+}
+
+printf '#!/bin/sh\necho dummy-bgpaint\n' > "$temp/fake"
+chmod +x "$temp/fake"
+CARGO_TARGET_DIR="$temp/target" BGPAINT_BINARY="$temp/fake" script/bundle-linux > /dev/null
+bundle="$temp/target/release/bgpaint-linux-$(uname -m).tar.gz"
+[[ -f "$bundle" ]] || fail "no tarball"
+
+install() {
+    HOME="$home" XDG_CONFIG_HOME= XDG_DATA_HOME= SHELL=/bin/zsh BGPAINT_BUNDLE_PATH="$1" script/install.sh
+}
+output="$(install "$bundle")"
+grep -q "add ~/.local/bin to your PATH" <<<"$output" || fail "no PATH hint: $output"
+grep -q "zshrc" <<<"$output" || fail "PATH hint ignores the shell"
+
+[[ "$("$home/.local/bin/bgpaint")" == dummy-bgpaint ]] || fail "linked binary doesn't run"
+for size in 16 256 512; do
+    [[ -f "$home/.local/bgpaint.app/share/icons/hicolor/${size}x${size}/apps/bgpaint.png" ]] \
+        || fail "icon $size missing"
+done
+[[ -f "$home/.local/bgpaint.app/share/icons/hicolor/scalable/apps/bgpaint.svg" ]] || fail "svg icon missing"
+
+desktop="$home/.local/share/applications/$name"
+grep -qx "Name=BGPaint" "$desktop" || fail "Name missing"
+grep -qx "Exec=$home/.local/bgpaint.app/bin/bgpaint %F" "$desktop" || fail "Exec not absolute"
+grep -qx "Icon=$home/.local/bgpaint.app/share/icons/hicolor/512x512/apps/bgpaint.png" "$desktop" \
+    || fail "Icon not absolute"
+grep -qx "StartupWMClass=io.github.belizariogr.bgpaint" "$desktop" || fail "StartupWMClass lost"
+grep -q "^MimeType=image/png;" "$desktop" || fail "MimeType missing"
+
+# Reinstalling replaces leftovers; a bad bundle leaves the install working.
+touch "$home/.local/bgpaint.app/leftover"
+install "$bundle" > /dev/null
+[[ ! -e "$home/.local/bgpaint.app/leftover" ]] || fail "reinstall kept old files"
+mkdir -p "$temp/bad/empty"
+tar -czf "$temp/bad.tar.gz" -C "$temp/bad" empty
+if install "$temp/bad.tar.gz" > /dev/null 2>&1; then fail "accepted a bad bundle"; fi
+[[ -x "$home/.local/bgpaint.app/bin/bgpaint" ]] || fail "bad bundle broke the install"
+
+# Uninstall keeps user settings when not asked otherwise.
+mkdir -p "$home/.config/bgpaint"
+touch "$home/.config/bgpaint/settings.json"
+HOME="$home" XDG_CONFIG_HOME= XDG_DATA_HOME= script/uninstall.sh < /dev/null > /dev/null
+[[ ! -e "$home/.local/bgpaint.app" ]] || fail "app not removed"
+[[ ! -e "$home/.local/bin/bgpaint" ]] || fail "link not removed"
+[[ ! -e "$desktop" ]] || fail "desktop file not removed"
+[[ -f "$home/.config/bgpaint/settings.json" ]] || fail "uninstall deleted user settings"
+
+# System-wide install, into a temp prefix with a no-op privilege helper.
+prefix="$temp/prefix"
+system() {
+    HOME="$home" PREFIX="$prefix" SUDO=env CARGO_TARGET_DIR="$temp/target" \
+        BGPAINT_BINARY="$temp/fake" script/install-linux-system "$@"
+}
+system > "$temp/system.log"
+[[ "$("$prefix/bin/bgpaint")" == dummy-bgpaint ]] || fail "system binary doesn't run"
+desktop="$prefix/share/applications/$name"
+grep -qx "Exec=$prefix/bin/bgpaint %F" "$desktop" || fail "system Exec not absolute"
+grep -qx "Icon=$prefix/share/icons/hicolor/512x512/apps/bgpaint.png" "$desktop" \
+    || fail "system Icon not absolute"
+[[ -f "$prefix/share/icons/hicolor/512x512/apps/bgpaint.png" ]] || fail "system icons missing"
+[[ -f "$prefix/share/icons/hicolor/scalable/apps/bgpaint.svg" ]] || fail "system svg icon missing"
+if grep -q "takes precedence" "$temp/system.log"; then fail "warned about an absent ~/.local install"; fi
+
+mkdir -p "$home/.local/share/applications"
+touch "$home/.local/share/applications/$name"
+system | grep -q "takes precedence" || fail "no warning about the ~/.local install"
+
+system --uninstall > /dev/null
+[[ ! -e "$prefix/bin/bgpaint" && ! -e "$desktop" ]] || fail "system files not removed"
+# (Icon and desktop caches are regenerated files, not ours.)
+if find "$prefix" -type f ! -name '*.cache' ! -name 'mimeinfo.cache' | grep -q .; then
+    fail "system uninstall left files behind: $(find "$prefix" -type f ! -name '*.cache')"
+fi
+[[ -f "$home/.config/bgpaint/settings.json" ]] || fail "system uninstall deleted user settings"
+if PREFIX="$prefix" script/install-linux-system --bogus > /dev/null 2>&1; then
+    fail "accepted an unknown option"
+fi
+
+echo "install scripts OK"

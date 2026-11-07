@@ -22,13 +22,25 @@ pub struct View {
     pub viewport: Rect,
     pub ppp: f32,
     pub canvas: (u32, u32),
+    /// Space at the left of the viewport covered by the floating size/opacity bar; the canvas
+    /// is laid out (centered, fitted, scrolled) beside it.
+    pub left_inset: f32,
     fit_requested: bool,
     initialized: bool,
 }
 
 impl Default for View {
     fn default() -> Self {
-        Self { zoom: 1.0, offset: Vec2::ZERO, viewport: Rect::NOTHING, ppp: 1.0, canvas: (1, 1), fit_requested: false, initialized: false }
+        Self {
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            viewport: Rect::NOTHING,
+            ppp: 1.0,
+            canvas: (1, 1),
+            left_inset: 0.0,
+            fit_requested: false,
+            initialized: false,
+        }
     }
 }
 
@@ -81,7 +93,7 @@ impl View {
         }
         if !self.initialized {
             self.initialized = true;
-            self.offset = vec2(MARGIN, MARGIN);
+            self.offset = vec2(MARGIN + self.left_inset, MARGIN);
             self.center_small_axes(true);
         } else {
             self.center_small_axes(size_changed);
@@ -91,29 +103,34 @@ impl View {
     /// Zoom at which the canvas fills the viewport as much as possible, uncropped,
     /// with [`FIT_PADDING`] on every side.
     pub fn fit_zoom(&self) -> f32 {
-        let avail = (self.viewport.size() - Vec2::splat(FIT_PADDING * 2.0)).max(Vec2::splat(16.0));
+        let avail = (self.viewport.size() - Vec2::splat(FIT_PADDING * 2.0) - vec2(self.left_inset, 0.0)).max(Vec2::splat(16.0));
         let z = (avail.x / self.canvas.0 as f32).min(avail.y / self.canvas.1 as f32) * self.ppp;
         z.clamp(MIN_ZOOM, MAX_ZOOM)
     }
 
     /// Whether the canvas fits along `axis` and is therefore centered.
     pub fn fits(&self, axis: usize) -> bool {
-        self.canvas_size_points()[axis] + FIT_PADDING * 2.0 <= self.viewport.size()[axis] + 0.01
+        self.canvas_size_points()[axis] + FIT_PADDING * 2.0 + self.lead(axis) <= self.viewport.size()[axis] + 0.01
+    }
+
+    /// Space reserved before the canvas along `axis` (the left bar, horizontally).
+    pub fn lead(&self, axis: usize) -> f32 {
+        if axis == 0 { self.left_inset } else { 0.0 }
     }
 
     fn center_small_axes(&mut self, force: bool) {
         let size = self.canvas_size_points();
         let vp = self.viewport.size();
         for axis in 0..2 {
-            let (s, v) = (size[axis], vp[axis]);
+            let (s, v, lead) = (size[axis], vp[axis], self.lead(axis));
             if self.fits(axis) {
-                self.offset[axis] = ((v - s) / 2.0).round();
+                self.offset[axis] = lead + ((v - lead - s) / 2.0).round();
             } else {
-                let min = v - s - MARGIN;
-                if force && self.offset[axis] > MARGIN {
-                    self.offset[axis] = MARGIN;
+                let (min, max) = (v - s - MARGIN, MARGIN + lead);
+                if force && self.offset[axis] > max {
+                    self.offset[axis] = max;
                 }
-                self.offset[axis] = self.offset[axis].clamp(min, MARGIN);
+                self.offset[axis] = self.offset[axis].clamp(min.min(max), max);
             }
         }
     }
@@ -230,6 +247,13 @@ mod tests {
         assert!((v.zoom - 0.524).abs() < 1e-3, "{}", v.zoom);
         assert!(v.fits(0) && v.fits(1));
         assert_eq!(v.offset.x, 12.0);
+        // The left bar's space is kept free.
+        let mut w = view(548.0, 348.0, 1000, 600);
+        w.left_inset = 50.0;
+        w.request_fit();
+        w.layout(w.viewport, (1000, 600), 1.0);
+        assert!((w.zoom - 0.474).abs() < 1e-3, "{}", w.zoom);
+        assert_eq!(w.offset.x, 62.0);
         // Small images are enlarged to fill the window.
         let mut v = view(548.0, 348.0, 100, 50);
         v.request_fit();
