@@ -20,7 +20,7 @@ impl Flood {
         Some(Self { mask, seed: [d[i], d[i + 1], d[i + 2], d[i + 3]] })
     }
 
-    /// Pixels [`Flood::paint`] may change: the region plus its one pixel fringe.
+    /// Pixels [`Flood::paint`] may change: the region plus its one pixel fringe (corners included).
     pub fn bounds(&self) -> PixelRect {
         self.mask.bounds().expand(1).clamp_to(self.mask.width(), self.mask.height())
     }
@@ -49,10 +49,23 @@ impl Flood {
             let dist2 = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b.iter()).map(|(a, b)| (a - b) * (a - b)).sum::<f32>();
             for y in area.y0..area.y1 {
                 for x in area.x0..area.x1 {
-                    if in_mask(x, y) || ![(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| in_mask(x + dx, y + dy)) {
+                    if in_mask(x, y) {
                         continue;
                     }
                     let here = px(x, y);
+                    let edge = [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| in_mask(x + dx, y + dy));
+                    // A pixel touching the region only diagonally (the inside of a sharp corner)
+                    // belongs to the fringe unless a line runs between them: at least one of the
+                    // two pixels it shares with that diagonal must be no farther from the seed.
+                    let corner = || {
+                        let d = dist2(here, seed);
+                        [(-1, -1), (1, -1), (-1, 1), (1, 1)].iter().any(|&(dx, dy)| {
+                            in_mask(x + dx, y + dy) && (dist2(px(x + dx, y), seed) <= d || dist2(px(x, y + dy), seed) <= d)
+                        })
+                    };
+                    if !edge && !corner() {
+                        continue;
+                    }
                     // The outline color: the neighbor (outside the region) farthest from the seed.
                     let mut line = here;
                     let mut far = dist2(here, seed);
@@ -227,9 +240,8 @@ mod tests {
         let d = p.data();
         for y in 0..60 {
             for x in 0..60 {
-                if flood.mask.get(x, y) != 0
-                    || ![(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| flood.mask.get(x + dx, y + dy) != 0)
-                {
+                let touches = (-1..=1).any(|dy| (-1..=1).any(|dx| flood.mask.get(x + dx, y + dy) != 0));
+                if flood.mask.get(x, y) != 0 || !touches {
                     continue;
                 }
                 let i = (y as usize * 60 + x as usize) * 4;
@@ -238,6 +250,23 @@ mod tests {
         }
         // Outside stays white.
         assert_eq!(&d[0..4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn paint_fringe_does_not_cross_diagonal_line() {
+        // An aliased diagonal wall: the far side touches the region only diagonally.
+        let mut p = raster::pixmap(6, 6);
+        raster::fill_region(&mut p, PixelRect::new(0, 0, 6, 6), Color::WHITE);
+        for i in 0..6 {
+            raster::fill_region(&mut p, PixelRect::new(i, i, i + 1, i + 1), Color::BLACK);
+        }
+        let flood = Flood::at(&p, 5, 0, 0).unwrap();
+        flood.paint(&mut p, Color::rgb(255, 0, 0));
+        let d = p.data();
+        let px = |x: usize, y: usize| &d[(y * 6 + x) * 4..(y * 6 + x) * 4 + 4];
+        assert_eq!(px(5, 0), &[255, 0, 0, 255]);
+        assert_eq!(px(0, 1), &[255, 255, 255, 255]);
+        assert_eq!(px(3, 4), &[255, 255, 255, 255]);
     }
 
     #[test]
