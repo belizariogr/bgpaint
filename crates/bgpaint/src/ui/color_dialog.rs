@@ -34,6 +34,11 @@ pub struct ColorDialog {
     hex: String,
     mode: Mode,
     mode_open: bool,
+    /// The custom color slot being edited: changes made with the spectrum, the value slider and
+    /// the fields are written into it. An empty slot is filled on the first change.
+    custom_slot: Option<usize>,
+    /// The custom colors changed since the dialog opened (saved when it closes).
+    custom_dirty: bool,
 }
 
 impl ColorDialog {
@@ -85,7 +90,17 @@ impl PaintApp {
             }
             ColorTarget::Background => self.doc.background().color,
         };
-        let mut d = ColorDialog { target, h: 0.0, s: 0.0, v: 0.0, hex: String::new(), mode: Mode::Rgb, mode_open: false };
+        let mut d = ColorDialog {
+            target,
+            h: 0.0,
+            s: 0.0,
+            v: 0.0,
+            hex: String::new(),
+            mode: Mode::Rgb,
+            mode_open: false,
+            custom_slot: None,
+            custom_dirty: false,
+        };
         d.set(c);
         self.ui.modal = Some(Modal::EditColors(d));
     }
@@ -96,6 +111,9 @@ impl PaintApp {
         let mut custom = self.dialog_custom_colors();
         let mut custom_changed = false;
         let mut mode_anchor = Rect::NOTHING;
+        let before = d.color();
+        // Set when a swatch was clicked: picking a color is not an edit of the selected slot.
+        let mut picked = false;
         let r = dialog(ctx, t, "color-dialog", tr.edit_colors, 650.0, (tr.ok, Some(tr.cancel), None), |ui| {
             ui.horizontal_top(|ui| {
                 // Spectrum: hue across, saturation down.
@@ -214,6 +232,8 @@ impl PaintApp {
                         paint_swatch(ui.painter(), t, c, 10.0, col);
                         if resp.clicked() {
                             d.set(col);
+                            d.custom_slot = None;
+                            picked = true;
                         }
                     }
                 });
@@ -228,23 +248,38 @@ impl PaintApp {
                             custom.insert(0, Some(c));
                             custom.truncate(24);
                             custom_changed = true;
+                            // Later edits go to the color just added.
+                            d.custom_slot = Some(0);
                         }
                     });
                     ui.add_space(2.0);
                     let (gr, _) = ui.allocate_exact_size(vec2(6.0 * 30.0, 4.0 * 30.0), Sense::hover());
                     for i in 0..24 {
                         let c = pos2(gr.left() + 15.0 + (i % 6) as f32 * 30.0, gr.top() + 15.0 + (i / 6) as f32 * 30.0);
-                        match custom.get(i).copied().flatten() {
-                            Some(col) => {
-                                let resp =
-                                    ui.interact(Rect::from_center_size(c, vec2(26.0, 26.0)), Id::unique(("custom-dlg", i)), Sense::click());
-                                paint_swatch(ui.painter(), t, c, 10.0, col);
-                                if resp.clicked() {
-                                    d.set(col);
-                                }
-                            }
+                        let resp = ui.interact(Rect::from_center_size(c, vec2(26.0, 26.0)), Id::unique(("custom-dlg", i)), Sense::click());
+                        let selected = d.custom_slot == Some(i);
+                        if selected {
+                            ui.painter().circle_stroke(c, 12.5, Stroke::new(2.0, t.accent));
+                        } else if resp.hovered() {
+                            ui.painter().circle_stroke(c, 12.0, Stroke::new(1.5, t.text_secondary));
+                        }
+                        let col = custom.get(i).copied().flatten();
+                        match col {
+                            Some(col) => paint_swatch(ui.painter(), t, c, 10.0, col),
                             None => {
                                 ui.painter().circle_stroke(c, 9.5, Stroke::new(1.0, t.swatch_ring));
+                            }
+                        }
+                        let tip = if col.is_some() { tr.edit_custom_color } else { tr.define_custom_color };
+                        if resp.on_hover_text(tip).clicked() {
+                            picked = true;
+                            if selected {
+                                d.custom_slot = None;
+                            } else {
+                                d.custom_slot = Some(i);
+                                if let Some(col) = col {
+                                    d.set(col);
+                                }
                             }
                         }
                     }
@@ -268,8 +303,22 @@ impl PaintApp {
                 d.mode_open = false;
             }
         }
+        // Edits made while a custom slot is selected redefine that slot.
+        if !picked
+            && !custom_changed
+            && let Some(i) = d.custom_slot
+            && d.color() != before
+        {
+            custom[i] = Some(d.color());
+            custom_changed = true;
+        }
         if custom_changed {
             self.settings.dialog_custom_colors = custom.iter().map(|c| c.map(|c| c.to_hex_string()).unwrap_or_default()).collect();
+            d.custom_dirty = true;
+        }
+        // Dragging in the spectrum changes the slot every frame, so the custom colors are written
+        // to disk once, when the dialog closes; OK and Cancel both keep them.
+        if d.custom_dirty && r != Footer::None {
             self.settings.save();
         }
         match r {

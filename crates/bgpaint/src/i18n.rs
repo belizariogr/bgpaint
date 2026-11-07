@@ -145,6 +145,8 @@ strings! {
     edit_colors: "Edit colors", "Editar cores";
     basic_colors: "Basic colors", "Cores básicas";
     custom_colors: "Custom colors", "Cores personalizadas";
+    edit_custom_color: "Select to edit this color", "Selecione para editar esta cor";
+    define_custom_color: "Select to define a new color here", "Selecione para definir uma nova cor aqui";
     red: "Red", "Vermelho";
     green: "Green", "Verde";
     blue: "Blue", "Azul";
