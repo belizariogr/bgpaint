@@ -1,25 +1,64 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4CC2FF"/>
-      <stop offset="1" stop-color="#0063B1"/>
+      <stop offset="0" stop-color="#4FA8FF"/>
+      <stop offset="1" stop-color="#0A47BA"/>
     </linearGradient>
-    <linearGradient id="stroke" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#FF5A5F"/>
-      <stop offset="0.35" stop-color="#FFC83D"/>
-      <stop offset="0.7" stop-color="#3DDC84"/>
-      <stop offset="1" stop-color="#7B61FF"/>
+    <radialGradient id="glow" cx="0.3" cy="0.1" r="0.9">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="paint" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="160" y2="0">
+      <stop offset="0" stop-color="#FF4D6D"/>
+      <stop offset="0.3" stop-color="#FFB020"/>
+      <stop offset="0.62" stop-color="#22C55E"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
     </linearGradient>
-    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#D9E6F2"/>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1E3A8A"/>
+      <stop offset="0.5" stop-color="#2F55C4"/>
+      <stop offset="1" stop-color="#172E70"/>
+    </linearGradient>
+    <linearGradient id="ferrule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#C9D6EA"/>
+      <stop offset="0.45" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#9FB2CF"/>
     </linearGradient>
   </defs>
-  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#bg)"/>
-  <rect x="40" y="44" width="176" height="150" rx="18" fill="#FFFFFF" opacity="0.96"/>
-  <path d="M62 160 C 92 100, 122 196, 152 132 S 196 102, 196 102" fill="none" stroke="url(#stroke)" stroke-width="22" stroke-linecap="round"/>
-  <g transform="rotate(40 176 150)">
-    <rect x="166" y="70" width="22" height="92" rx="11" fill="url(#handle)" stroke="#0B3A63" stroke-width="5"/>
-    <path d="M162 160 h30 l-4 34 q-11 16 -22 0 z" fill="#3A3A3A"/>
+  <!-- Rounded-square tile, same as BGMail -->
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <rect width="256" height="256" rx="58" fill="url(#glow)"/>
+  <g transform="translate(128 128) scale(1.08) translate(-128 -124)">
+    <!-- Canvas: shadow + white card -->
+    <rect x="46" y="66" width="164" height="128" rx="20" fill="#06309A" opacity="0.30"/>
+    <rect x="46" y="60" width="164" height="128" rx="20" fill="#FFFFFF"/>
+    <!-- Paint stroke -->
+    <path d="M74 150 C 88 118, 104 116, 112 136 S 140 150, 156 116" fill="none" stroke="url(#paint)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Brush, tip resting on the end of the stroke -->
+    <g transform="translate(160 110) rotate(40)">
+      <!-- shadow -->
+      <g transform="translate(4 3)" fill="#06309A" opacity="0.18">
+        <path d="M0 2 C-9 -10 -8 -26 -8 -30 H8 C8 -26 9 -10 0 2 Z"/>
+        <rect x="-8" y="-46" width="16" height="17"/>
+        <path d="M-8 -46 L-5.5 -104 A5.5 5.5 0 0 1 5.5 -104 L8 -46 Z"/>
+      </g>
+      <!-- handle -->
+      <path d="M-8 -46 L-5.5 -104 A5.5 5.5 0 0 1 5.5 -104 L8 -46 Z" fill="url(#handle)"/>
+      <!-- ferrule -->
+      <rect x="-8.5" y="-47" width="17" height="18" rx="2" fill="url(#ferrule)"/>
+      <rect x="-8.5" y="-41" width="17" height="2.2" fill="#9FB2CF"/>
+      <!-- bristles dipped in paint -->
+      <path d="M0 2 C-9 -10 -8 -26 -8 -30 H8 C8 -26 9 -10 0 2 Z" fill="#8B5CF6"/>
+      <path d="M0 2 C-3 -8 -3 -20 -2.5 -30 H2 C1 -20 2 -8 0 2 Z" fill="#FFFFFF" opacity="0.25"/>
+    </g>
+    <!-- BG monogram as the painting's signature -->
+    <g transform="translate(182 166)">
+      <g fill="#1B6AE0" transform="scale(0.18) translate(-199.5 -140)">
+        <path fill-rule="evenodd" d="M108 92 H156 C175 92 188 101.5 188 116.5 C188 126.5 181.5 134 171 137.5 C183.5 140.5 191 149 191 161.5 C191 178 177 188 157 188 H108 V92 Z M130 110 V131 H151 C160 131 165.5 126.5 165.5 120.5 C165.5 114.5 160 110 151 110 H130 Z M130 146 V170 H153.5 C162.5 170 168 165.5 168 158 C168 150.5 162.5 146 153.5 146 H130 Z"/>
+        <g transform="translate(194 92) scale(1.230769) translate(-144.5 -104)">
+          <path d="M186 104 C202.5 104 215.5 111.5 221 124 L204.5 131.5 C200.5 123.5 194 119.5 185.5 119.5 C171.5 119.5 163 129.5 163 143 C163 156.5 171.5 166.5 186 166.5 C197 166.5 204.5 161 206 152 H185 V138.5 H223 V147.5 C223 169 208 182 185.5 182 C160.5 182 144.5 165.5 144.5 143 C144.5 120.5 160.5 104 186 104 Z"/>
+        </g>
+      </g>
+    </g>
   </g>
 </svg>
