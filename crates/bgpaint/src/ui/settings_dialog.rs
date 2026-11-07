@@ -13,7 +13,7 @@ impl PaintApp {
     pub fn settings_dialog(&mut self, ctx: &egui::Context, t: &Theme) {
         let tr = self.tr;
         let mut theme = self.settings.theme;
-        let r = dialog(ctx, t, "settings-dialog", tr.settings, 420.0, (tr.close, None, None), |ui| {
+        let r = dialog(ctx, t, "settings-dialog", tr.settings, 440.0, (tr.close, None, None), |ui| {
             dialogs::section(ui, t, tr.app_theme);
             for (mode, label) in
                 [(ThemeMode::Light, tr.theme_light), (ThemeMode::Dark, tr.theme_dark), (ThemeMode::System, tr.theme_system)]
@@ -22,10 +22,9 @@ impl PaintApp {
                     theme = mode;
                 }
             }
-            ui.add_space(10.0);
-            let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-            ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, t.separator));
-            ui.add_space(6.0);
+            separator(ui, t);
+            self.update_settings(ui, t);
+            separator(ui, t);
             dialogs::section(ui, t, tr.about);
             ui.label(RichText::new(format!("BGPaint {}", env!("CARGO_PKG_VERSION"))).size(14.0).color(t.text));
             ui.label(RichText::new(tr.about_text).size(13.0).color(t.text_secondary));
@@ -52,8 +51,16 @@ impl PaintApp {
         if theme != self.settings.theme {
             self.set_theme_mode(ctx, theme);
         }
-        if r == Footer::None {
+        // The update dialog may have taken over (see `PaintApp::poll_updater`).
+        if r == Footer::None && self.ui.modal.is_none() {
             self.ui.modal = Some(Modal::Settings);
         }
     }
+}
+
+fn separator(ui: &mut egui::Ui, t: &Theme) {
+    ui.add_space(10.0);
+    let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, t.separator));
+    ui.add_space(6.0);
 }

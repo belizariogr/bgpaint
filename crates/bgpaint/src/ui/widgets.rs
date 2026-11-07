@@ -141,7 +141,7 @@ pub fn accent_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response
 /// A standard button: Fluent on Linux, AppKit's push button on macOS.
 pub fn standard_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
-    paint_standard_button(ui, t, rect, &resp, text, true);
+    paint_standard_button(ui, t, rect, &resp, text, ui.is_enabled());
     resp
 }
 
@@ -339,8 +339,17 @@ pub fn paint_checkbox(p: &egui::Painter, t: &Theme, center: Pos2, checked: bool,
 /// A text field; returns the inner response. `width` in points. Fluent on Linux; on macOS it
 /// follows AppKit's rounded text field instead (see [`mac_text_field`]).
 pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id) -> Response {
+    field(ui, t, value, width, id, false)
+}
+
+/// A [`text_field`] that shows dots instead of the text.
+pub fn password_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id) -> Response {
+    field(ui, t, value, width, id, true)
+}
+
+fn field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id, password: bool) -> Response {
     if cfg!(target_os = "macos") {
-        return mac_text_field(ui, t, value, width, id);
+        return mac_text_field(ui, t, value, width, id, password);
     }
     let (rect, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
     // The editor spans the whole field height so its text is centered vertically.
@@ -348,6 +357,7 @@ pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id
     ui.painter().rect(rect, RADIUS, t.input_bg, Stroke::new(1.0, t.input_border), StrokeKind::Inside);
     let edit = egui::TextEdit::singleline(value)
         .id(id)
+        .password(password)
         .frame(egui::Frame::NONE)
         .margin(egui::Margin::ZERO)
         .font(FontId::proportional(14.0))
@@ -366,7 +376,7 @@ pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id
 /// AppKit's text field: a regular-size rounded box with a hairline border, the system font at 13 pt,
 /// the accent-colored insertion point and selection, and the soft focus ring drawn outside the
 /// box. Takes the same 32 pt row as the Fluent field so dialog layouts stay put.
-fn mac_text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id) -> Response {
+fn mac_text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id, password: bool) -> Response {
     // NSColor.controlAccentColor and NSColor.selectedTextBackgroundColor.
     let accent = mac::accent(t);
     let selection = if t.dark { Color32::from_rgb(0x3F, 0x63, 0x8B) } else { Color32::from_rgb(0xB3, 0xD7, 0xFF) };
@@ -383,6 +393,7 @@ fn mac_text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id
     let inner = rect.shrink2(vec2(7.0, 0.0));
     let edit = egui::TextEdit::singleline(value)
         .id(id)
+        .password(password)
         .frame(egui::Frame::NONE)
         .margin(egui::Margin::ZERO)
         .font(mac::font())

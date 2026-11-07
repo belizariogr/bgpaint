@@ -43,6 +43,7 @@ pub struct NativeMenu {
 /// Strings that only the Mac menu uses.
 struct MacStrings {
     about: &'static str,
+    check_updates: &'static str,
     settings: &'static str,
     services: &'static str,
     hide: &'static str,
@@ -61,6 +62,7 @@ struct MacStrings {
 
 const MAC_EN: MacStrings = MacStrings {
     about: "About BGPaint",
+    check_updates: "Check for Updates…",
     settings: "Settings…",
     services: "Services",
     hide: "Hide BGPaint",
@@ -79,6 +81,7 @@ const MAC_EN: MacStrings = MacStrings {
 
 const MAC_PT: MacStrings = MacStrings {
     about: "Sobre o BGPaint",
+    check_updates: "Procurar Atualizações…",
     settings: "Ajustes…",
     services: "Serviços",
     hide: "Ocultar BGPaint",
@@ -158,6 +161,7 @@ impl NativeMenu {
         let has_sel: fn(&PaintApp) -> bool = PaintApp::has_selection;
 
         let about = b.item(m.about, Command::OpenSettings, None);
+        let check_updates = b.item(m.check_updates, Command::CheckForUpdates, None);
         let settings = b.item(m.settings, Command::OpenSettings, cmd(Code::Comma));
         let quit = b.item(m.quit, Command::Exit, cmd(Code::KeyQ));
         let services = Submenu::new(m.services, true);
@@ -165,6 +169,7 @@ impl NativeMenu {
             "BGPaint",
             &[
                 &about,
+                &check_updates,
                 &sep(),
                 &settings,
                 &sep(),

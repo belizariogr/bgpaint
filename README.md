@@ -76,6 +76,26 @@ The icon is drawn in `crates/bgpaint/assets/icon.svg`; after editing it, run
 `script/generate-app-icons` (PNGs, `.icns`, `.ico`) and
 `script/generate-macos-dmg-assets` (DMG background and volume icon).
 
+## Updates
+
+At startup BGPaint asks GitHub for the latest release and, when it is newer, downloads the
+package that matches how it was installed, checks it against the SHA-256 digest GitHub
+publishes, and installs it; the new version runs after a restart (Settings ▸ Updates turns the
+check off or runs it by hand, as does BGPaint ▸ Check for Updates on macOS):
+
+| Installed with | Updated from | Password |
+|---|---|---|
+| `install.sh` (`~/.local/bgpaint.app`) | `bgpaint-linux-<arch>.tar.gz` | no, silent |
+| `script/install-linux-system` (`/usr`, `/usr/local`) | the same tarball | root (polkit, or `sudo`) |
+| `.deb` | the `.deb` (apt) | root (polkit, or `sudo`) |
+| AppImage | the `.AppImage` | only if its folder is not writable |
+| macOS `.dmg` | the `.dmg` for the Mac's CPU (same Developer ID required) | only if the app's folder is not writable |
+
+Root is requested through the desktop's polkit agent (`pkexec`); without one, BGPaint asks
+for the password itself and runs `sudo`. Copies owned by pacman/rpm or built from source only
+report the new version. Builds with debug assertions, or `BGPAINT_NO_UPDATE=1`, skip the
+startup check. The installer steps are in `crates/bgpaint/src/update/install.sh`.
+
 ## License
 
 MIT. Bundled fonts and icons are listed in [THIRD_PARTY.md](THIRD_PARTY.md).

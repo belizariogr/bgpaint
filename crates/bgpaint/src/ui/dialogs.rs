@@ -16,6 +16,7 @@ pub enum Modal {
     EditColors(super::color_dialog::ColorDialog),
     Print(super::print_dialog::PrintDialog),
     Settings,
+    Update,
 }
 
 /// What the footer buttons of a dialog produced.
@@ -143,6 +144,7 @@ impl PaintApp {
                     Footer::Primary => self.resolve_unsaved(ctx, action, true),
                     Footer::Secondary => self.resolve_unsaved(ctx, action, false),
                     Footer::Cancel => {
+                        self.updater.relaunch = false;
                         self.exit_discarded.clear();
                         self.return_to_tab = None;
                     }
@@ -164,6 +166,7 @@ impl PaintApp {
             Modal::EditColors(state) => self.color_dialog(ctx, &t, state),
             Modal::Print(state) => self.print_dialog(ctx, &t, state),
             Modal::Settings => self.settings_dialog(ctx, &t),
+            Modal::Update => self.update_dialog(ctx, &t),
         }
     }
 }

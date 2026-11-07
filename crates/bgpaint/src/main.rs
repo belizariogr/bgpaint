@@ -20,6 +20,7 @@ mod tabs;
 mod theme;
 mod tools;
 mod ui;
+mod update;
 
 use std::time::Instant;
 

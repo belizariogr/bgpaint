@@ -128,6 +128,7 @@ pub struct PaintApp {
     pub exit_discarded: std::collections::HashMap<u64, u64>,
     /// Tab to go back to after closing a background tab.
     pub return_to_tab: Option<u64>,
+    pub updater: crate::update::Updater,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
     /// The global menu bar on macOS.
@@ -175,6 +176,7 @@ impl PaintApp {
             next_tab_id: 1,
             exit_discarded: Default::default(),
             return_to_tab: None,
+            updater: Default::default(),
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(),
             #[cfg(target_os = "macos")]
@@ -188,6 +190,9 @@ impl PaintApp {
         crate::tools::text::preload_fonts();
         for path in open {
             app.open_path(&cc.egui_ctx, path);
+        }
+        if app.settings.check_updates && crate::update::automatic_checks_allowed() {
+            app.updater.check(&cc.egui_ctx, false);
         }
         app
     }
@@ -293,6 +298,14 @@ impl PaintApp {
         self.settings.maximized = maximized;
     }
 
+    /// Shows the update dialog when the updater has news (over Settings, not over other dialogs).
+    fn poll_updater(&mut self) {
+        self.updater.poll();
+        if self.updater.wants_dialog() && matches!(self.ui.modal, None | Some(Modal::Settings)) {
+            self.ui.modal = Some(Modal::Update);
+        }
+    }
+
     fn paint_toast(&mut self, ctx: &egui::Context) {
         let Some((text, at)) = &self.toast else { return };
         let age = at.elapsed().as_secs_f32();
@@ -352,6 +365,7 @@ impl eframe::App for PaintApp {
         }
         self.canvas_panel(ui);
         self.open_menus(&ctx);
+        self.poll_updater();
         self.modals(&ctx);
         self.paint_toast(&ctx);
         self.update_title(&ctx);
@@ -364,6 +378,16 @@ impl eframe::App for PaintApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.settings.custom_colors = self.colors.custom.iter().map(|c| c.map(|c| c.to_hex_string()).unwrap_or_default()).collect();
         self.settings.save();
+        if self.updater.relaunch {
+            // The open files that are on disk come back in the new version.
+            let files: Vec<std::path::PathBuf> = std::iter::once(&self.file.path)
+                .chain(self.tabs.iter().map(|t| &t.file.path))
+                .flatten()
+                .filter(|p| p.exists())
+                .cloned()
+                .collect();
+            self.updater.relaunch(&files);
+        }
     }
 
     #[cfg(feature = "automation")]

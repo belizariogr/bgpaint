@@ -16,4 +16,5 @@ pub mod settings_dialog;
 pub mod statusbar;
 pub mod tab_strip;
 pub mod text_bar;
+pub mod update_dialog;
 pub mod widgets;

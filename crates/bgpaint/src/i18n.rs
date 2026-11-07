@@ -238,6 +238,31 @@ strings! {
     source_code: "Source code", "Código-fonte";
     license: "License (MIT)", "Licença (MIT)";
     third_party: "Third-party notices", "Avisos de terceiros";
+    // Updates ({version}: the new version; {manager}: a package manager)
+    updates: "Updates", "Atualizações";
+    check_updates_automatically: "Check for updates automatically", "Procurar atualizações automaticamente";
+    check_for_updates: "Check for updates", "Procurar atualizações";
+    update_title: "Update BGPaint", "Atualizar o BGPaint";
+    update_checking: "Checking for updates…", "Procurando atualizações…";
+    update_up_to_date: "BGPaint is up to date.", "O BGPaint está atualizado.";
+    update_check_failed: "Could not check for updates.", "Não foi possível procurar atualizações.";
+    update_downloading: "Downloading BGPaint {version}…", "Baixando o BGPaint {version}…";
+    update_ready: "BGPaint {version} is ready to install. Installing it requires the administrator password.", "O BGPaint {version} está pronto para ser instalado. A instalação requer a senha de administrador.";
+    update_ready_short: "BGPaint {version} is ready to install.", "O BGPaint {version} está pronto para ser instalado.";
+    update_admin_prompt: "BGPaint wants to install an update.", "O BGPaint quer instalar uma atualização.";
+    update_password: "Enter your password to install BGPaint {version}.", "Digite sua senha para instalar o BGPaint {version}.";
+    update_wrong_password: "Wrong password, or this user is not allowed to use sudo.", "Senha incorreta, ou este usuário não tem permissão para usar o sudo.";
+    update_installing: "Installing BGPaint {version}…", "Instalando o BGPaint {version}…";
+    update_installed: "BGPaint {version} is installed. Restart BGPaint to start using it.", "O BGPaint {version} foi instalado. Reinicie o BGPaint para começar a usá-lo.";
+    update_available: "BGPaint {version} is available.", "O BGPaint {version} está disponível.";
+    update_managed: "BGPaint {version} is available. This copy was installed with {manager}: update it from there.", "O BGPaint {version} está disponível. Esta cópia foi instalada com o {manager}: atualize-a por lá.";
+    update_unsupported: "BGPaint {version} is available. This copy can't update itself: download the new version from the releases page.", "O BGPaint {version} está disponível. Esta cópia não pode se atualizar sozinha: baixe a nova versão na página de versões.";
+    update_failed: "The update could not be installed.", "Não foi possível instalar a atualização.";
+    update_install: "Install", "Instalar";
+    update_restart: "Restart now", "Reiniciar agora";
+    update_later: "Later", "Mais tarde";
+    update_download_page: "Open download page", "Abrir página de download";
+    update_whats_new: "What's new", "Novidades";
     // Status bar
     zoom_level: "Zoom level", "Nível de zoom";
     canvas_size: "Canvas size", "Tamanho da tela";
