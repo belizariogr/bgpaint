@@ -79,10 +79,6 @@ impl PaintApp {
                 self.tools.fill = s;
                 self.on_shape_style_changed();
             }
-            Command::SetSize(w) => {
-                self.tools.shape_width = w;
-                self.on_shape_style_changed();
-            }
             Command::GrowSize(up) => self.grow_size(up),
             Command::ZoomIn => {
                 let z = self.view.next_preset(true);
@@ -118,7 +114,10 @@ impl PaintApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.ui.fullscreen));
             }
             Command::ToggleThumbnail => self.ui.thumbnail = !self.ui.thumbnail,
-            Command::ToggleLayersPanel => self.ui.show_layers = !self.ui.show_layers,
+            Command::ToggleLayersPanel => {
+                self.settings.show_layers = !self.settings.show_layers;
+                self.settings.save();
+            }
             Command::OpenSettings => {
                 self.commit_interaction();
                 self.ui.open_menu = None;
@@ -150,6 +149,7 @@ impl PaintApp {
                 let i = self.layer_index(i);
                 self.layer_op("move layer", |d| d.move_layer(i, up))
             }
+            Command::ReorderLayer(from, to) => self.layer_op("move layer", |d| d.move_layer_to(from, to)),
             Command::DeleteLayer(i) => {
                 let i = self.layer_index(i);
                 self.layer_op("delete layer", |d| d.delete_layer(i))
@@ -203,14 +203,11 @@ impl PaintApp {
     }
 
     fn grow_size(&mut self, up: bool) {
-        if self.tool == Tool::Shape {
-            let widths = crate::tools::SHAPE_WIDTHS;
-            let i = widths.iter().position(|w| (*w - self.tools.shape_width).abs() < 0.1).unwrap_or(2);
-            let j = if up { (i + 1).min(widths.len() - 1) } else { i.saturating_sub(1) };
-            self.tools.shape_width = widths[j];
-            self.on_shape_style_changed();
-        } else if let Some(s) = self.tools.stroke_mut(self.tool) {
+        if let Some(s) = self.tools.stroke_mut(self.tool) {
             s.size = if up { (s.size + 1.0).min(MAX_SIZE) } else { (s.size - 1.0).max(1.0) };
+            if self.tool == Tool::Shape {
+                self.on_shape_style_changed();
+            }
         }
     }
 

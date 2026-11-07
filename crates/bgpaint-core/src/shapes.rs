@@ -100,6 +100,8 @@ pub struct ShapePaint {
     pub width: f32,
     pub outline_color: Color,
     pub fill_color: Color,
+    /// Opacity of the whole shape (outline and fill together), 0..=1.
+    pub opacity: f32,
 }
 
 fn poly(points: &[(f32, f32)], r: &RectF) -> Option<Path> {
@@ -349,19 +351,7 @@ impl RasterShape {
 
 /// Rasterizes `path` (already in canvas coordinates) clipped to the canvas.
 pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, canvas_h: u32) -> Option<RasterShape> {
-    let b = path.bounds();
-    let pad = paint.width + 2.0;
-    let area = PixelRect::enclosing(b.left() - pad, b.top() - pad, b.right() + pad, b.bottom() + pad).clamp_to(canvas_w, canvas_h);
-    if area.is_empty() {
-        return None;
-    }
-    let mut out = raster::pixmap(area.width(), area.height());
-    let to_local = Transform::from_translate(-area.x0 as f32, -area.y0 as f32);
-
-    if closed && paint.fill != ShapeStyle::None {
-        draw_styled(&mut out, path, None, paint.fill, paint.fill_color, to_local, area);
-    }
-    if paint.outline != ShapeStyle::None || !closed {
+    let outline = (paint.outline != ShapeStyle::None || !closed).then(|| {
         let style = if paint.outline == ShapeStyle::None { ShapeStyle::Solid } else { paint.outline };
         let stroke = Stroke {
             width: paint.width.max(1.0),
@@ -369,7 +359,30 @@ pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, c
             line_join: if matches!(style, ShapeStyle::Solid) { LineJoin::Miter } else { LineJoin::Round },
             ..Stroke::default()
         };
-        draw_styled(&mut out, path, Some(&stroke), style, paint.outline_color, to_local, area);
+        (style, stroke)
+    });
+    // The outline's own extent: mitered corners reach up to `miter_limit * width / 2` past a
+    // vertex, far more than the width itself on sharp corners of thick outlines.
+    let b = outline.as_ref().and_then(|(_, s)| path.stroke(s, 1.0)).map_or(path.bounds(), |o| o.bounds());
+    let pad = 2.0;
+    let area = PixelRect::enclosing(b.left() - pad, b.top() - pad, b.right() + pad, b.bottom() + pad).clamp_to(canvas_w, canvas_h);
+    if area.is_empty() {
+        return None;
+    }
+    let mut out = raster::pixmap(area.width(), area.height());
+    let to_local = Transform::from_translate(-area.x0 as f32, -area.y0 as f32);
+    if closed && paint.fill != ShapeStyle::None {
+        draw_styled(&mut out, path, None, paint.fill, paint.fill_color, to_local, area);
+    }
+    if let Some((style, stroke)) = &outline {
+        draw_styled(&mut out, path, Some(stroke), *style, paint.outline_color, to_local, area);
+    }
+    // Faded as one piece, so the outline over the fill does not get darker.
+    let opacity = (paint.opacity.clamp(0.0, 1.0) * 255.0).round() as u16;
+    if opacity < 255 {
+        for c in out.data_mut() {
+            *c = crate::color::mul_div255(u16::from(*c), opacity);
+        }
     }
     Some(RasterShape { pixmap: out, x: area.x0, y: area.y0 })
 }
@@ -446,6 +459,7 @@ mod tests {
             width: 3.0,
             outline_color: Color::BLACK,
             fill_color: Color::rgb(255, 0, 0),
+            opacity: 1.0,
         };
         let path = box_shape_path(ShapeKind::Rectangle, &RectF::from_xywh(10.0, 10.0, 20.0, 20.0)).unwrap();
         let s = rasterize(&path, &paint, true, 100, 100).unwrap();
@@ -456,9 +470,60 @@ mod tests {
     }
 
     #[test]
+    fn opacity_fades_the_shape_as_one_piece() {
+        let paint = ShapePaint {
+            outline: ShapeStyle::Solid,
+            fill: ShapeStyle::Solid,
+            width: 3.0,
+            outline_color: Color::BLACK,
+            fill_color: Color::rgb(255, 0, 0),
+            opacity: 0.5,
+        };
+        let path = box_shape_path(ShapeKind::Rectangle, &RectF::from_xywh(10.0, 10.0, 20.0, 20.0)).unwrap();
+        let s = rasterize(&path, &paint, true, 100, 100).unwrap();
+        let at = |x: i32, y: i32| raster::get_pixel(&s.pixmap, x - s.x, y - s.y).unwrap();
+        assert_eq!(at(20, 20), Color::rgba(255, 0, 0, 128));
+        assert_eq!(at(10, 20), Color::rgba(0, 0, 0, 128));
+        // Where the outline covers the fill, it is not faded twice.
+        assert!(s.pixmap.pixels().iter().all(|p| p.alpha() <= 128));
+    }
+
+    #[test]
+    fn thick_outline_keeps_sharp_mitered_corners() {
+        // A sharp triangle (miter ratio ~3.5, under the limit of 4): its top corner's miter
+        // reaches ~70 px above the vertex, well past `width + 2`.
+        let paint = ShapePaint {
+            outline: ShapeStyle::Solid,
+            fill: ShapeStyle::None,
+            width: 40.0,
+            outline_color: Color::BLACK,
+            fill_color: Color::BLACK,
+            opacity: 1.0,
+        };
+        let mut pb = PathBuilder::new();
+        pb.move_to(200.0, 150.0);
+        pb.line_to(260.0, 350.0);
+        pb.line_to(140.0, 350.0);
+        pb.close();
+        let path = pb.finish().unwrap();
+        let s = rasterize(&path, &paint, true, 400, 400).unwrap();
+        // Same outline drawn straight onto a canvas-sized pixmap.
+        let mut full = raster::pixmap(400, 400);
+        let mut p = Paint::default();
+        p.set_color(Color::BLACK.to_skia());
+        p.anti_alias = true;
+        let stroke = Stroke { width: 40.0, line_cap: LineCap::Butt, line_join: LineJoin::Miter, ..Stroke::default() };
+        full.stroke_path(&path, &p, &stroke, Transform::identity(), None);
+        let ink = |p: &Pixmap| p.pixels().iter().map(|c| u32::from(c.alpha())).sum::<u32>();
+        assert!(s.y < 150 - 60, "miter tip clipped: area starts at y = {}", s.y);
+        assert_eq!(ink(&s.pixmap), ink(&full));
+    }
+
+    #[test]
     fn textured_styles_render() {
         for style in ShapeStyle::OPTIONS {
-            let paint = ShapePaint { outline: style, fill: style, width: 8.0, outline_color: Color::BLACK, fill_color: Color::BLACK };
+            let paint =
+                ShapePaint { outline: style, fill: style, width: 8.0, outline_color: Color::BLACK, fill_color: Color::BLACK, opacity: 1.0 };
             let path = box_shape_path(ShapeKind::Oval, &RectF::from_xywh(0.0, 0.0, 50.0, 50.0)).unwrap();
             let s = rasterize(&path, &paint, true, 64, 64).unwrap();
             let opaque = s.pixmap.pixels().iter().filter(|p| p.alpha() > 0).count();

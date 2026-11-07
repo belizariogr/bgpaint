@@ -1,5 +1,5 @@
 //! The Layers panel on the right: add button, layer thumbnails (top layer first) and the
-//! background card at the bottom.
+//! background card at the bottom. Layers can be dragged to a new place in the stack.
 
 use super::icons::regular as ic;
 use super::menubar::MenuKind;
@@ -8,12 +8,28 @@ use crate::app::PaintApp;
 use crate::commands::Command;
 use bgpaint_core::document::LayerId;
 use bgpaint_core::raster;
-use egui::{Color32, Id, Rect, Sense, Stroke, TextureHandle, pos2, vec2};
+use egui::{Color32, CursorIcon, Id, Rect, Sense, Stroke, TextureHandle, Vec2, pos2, vec2};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 pub const PANEL_WIDTH: f32 = 112.0;
+/// The checkerboard behind layer thumbnails.
+const CHECKER: [Color32; 2] = [Color32::from_gray(255), Color32::from_gray(204)];
 const THUMB: f32 = 76.0;
+/// Gap between two layer cards (the drop marker sits in its middle).
+const GAP: f32 = 8.0;
+/// Distance from the list's top or bottom edge where a drag scrolls the list.
+const AUTO_SCROLL_EDGE: f32 = 28.0;
+/// Opacity of the card that follows the pointer while a layer is dragged.
+const GHOST_OPACITY: f32 = 0.6;
+
+/// A layer being dragged in the panel.
+#[derive(Clone, Copy)]
+struct LayerDrag {
+    layer: LayerId,
+    /// Pointer position relative to the card's center when the drag started.
+    grab: Vec2,
+}
 
 /// Cached layer thumbnails.
 #[derive(Default)]
@@ -97,34 +113,83 @@ impl PaintApp {
                 let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list));
                 egui::ScrollArea::vertical().id_salt("layers-scroll").show(&mut list_ui, |ui| {
                     ui.set_width(list.width());
+                    let drag_id = Id::unique("layer-drag");
+                    let drag: Option<LayerDrag> = ctx.data(|d| d.get_temp(drag_id));
+                    let dragging = drag.map(|d| d.layer);
                     let n = self.doc.layers().len();
+                    // Display order, top layer first: (layer index, card response).
+                    let mut rows = Vec::with_capacity(n);
                     for i in (0..n).rev() {
-                        self.layer_card(ui, &t, i);
-                        ui.add_space(8.0);
+                        let id = self.doc.layers()[i].id;
+                        let resp = self.layer_card(ui, &t, i, dragging);
+                        if resp.drag_started() {
+                            let grab = ctx.input(|i| i.pointer.press_origin()).map_or(Vec2::ZERO, |p| p - resp.rect.center());
+                            ctx.data_mut(|d| d.insert_temp(drag_id, LayerDrag { layer: id, grab }));
+                            self.execute(&ctx, Command::SelectLayer(i));
+                        }
+                        rows.push((i, resp));
+                        ui.add_space(GAP);
+                    }
+                    let Some(drag) = drag else { return };
+                    let Some(r0) = rows.iter().position(|(i, _)| self.doc.layers()[*i].id == drag.layer) else {
+                        ctx.data_mut(|d| d.remove::<LayerDrag>(drag_id));
+                        return;
+                    };
+                    ctx.set_cursor_icon(CursorIcon::Grabbing);
+                    let pointer = ctx.input(|i| i.pointer.latest_pos());
+                    let drop = pointer.and_then(|p| drop_target(&rows, r0, p.y));
+                    if let Some((slot, _)) = drop {
+                        paint_drop_marker(ui, &t, &rows, slot, list);
+                    }
+                    // A faded copy of the card follows the pointer up and down the list.
+                    if let Some(p) = pointer {
+                        let y = (p.y - drag.grab.y).clamp(list.top(), list.bottom());
+                        let card = Rect::from_center_size(pos2(rows[r0].1.rect.center().x, y), vec2(THUMB + 8.0, THUMB + 8.0));
+                        self.paint_drag_ghost(&ctx, &t, rows[r0].0, card);
+                    }
+                    // Scroll while holding the layer near the list's top or bottom edge.
+                    if let Some(p) = pointer {
+                        let speed = if p.y < list.top() + AUTO_SCROLL_EDGE {
+                            8.0
+                        } else if p.y > list.bottom() - AUTO_SCROLL_EDGE {
+                            -8.0
+                        } else {
+                            0.0
+                        };
+                        if speed != 0.0 {
+                            ui.scroll_with_delta(vec2(0.0, speed));
+                            ctx.request_repaint();
+                        }
+                    }
+                    let stopped = rows[r0].1.drag_stopped() || !ctx.input(|i| i.pointer.any_down());
+                    if stopped {
+                        ctx.data_mut(|d| d.remove::<LayerDrag>(drag_id));
+                        if let Some((_, to)) = drop {
+                            self.execute(&ctx, Command::ReorderLayer(rows[r0].0, to));
+                        }
                     }
                 });
             });
     }
 
-    fn layer_card(&mut self, ui: &mut egui::Ui, t: &crate::theme::Theme, i: usize) {
+    /// Draws one layer card and returns its response (clicks select, drags reorder).
+    fn layer_card(&mut self, ui: &mut egui::Ui, t: &crate::theme::Theme, i: usize, dragging: Option<LayerId>) -> egui::Response {
         let ctx = ui.ctx().clone();
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), THUMB + 8.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), THUMB + 8.0), Sense::click_and_drag());
         let card = Rect::from_center_size(rect.center(), vec2(THUMB + 8.0, THUMB + 8.0));
         let layer = &self.doc.layers()[i];
         let active = i == self.doc.active_index();
         let visible = layer.visible;
         let id = layer.id;
+        let lifted = dragging == Some(id);
         let p = ui.painter();
         if active {
             p.rect(card, 6, t.hover, Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
-        } else if resp.hovered() {
+        } else if resp.hovered() && dragging.is_none() {
             p.rect_filled(card, 6, t.hover);
         }
-        let inner = card.shrink(6.0);
-        let (w, h) = fit(self.doc.width(), self.doc.height());
-        let s = (inner.width() / w as f32).min(inner.height() / h as f32);
-        let img = Rect::from_center_size(inner.center(), vec2(w as f32 * s, h as f32 * s));
-        self.checker.paint(&ctx, p, img, [Color32::from_gray(255), Color32::from_gray(204)]);
+        let img = self.thumb_rect(card);
+        self.checker.paint(&ctx, p, img, CHECKER);
         if let Some(tex) = self.thumbs.textures.get(&id) {
             p.image(
                 tex.id(),
@@ -133,10 +198,14 @@ impl PaintApp {
                 if visible { Color32::WHITE } else { Color32::from_white_alpha(90) },
             );
         }
+        // The layer being dragged stays faded in its old place until it is dropped.
+        if lifted {
+            p.rect_filled(card, 6, t.ribbon_bg.gamma_multiply(0.6));
+        }
         // Visibility toggle (shown on hover or when hidden).
         let eye = Rect::from_center_size(pos2(card.right() - 14.0, card.top() + 14.0), vec2(22.0, 22.0));
         let eye_resp = ui.interact(eye, Id::unique(("eye", id.0)), Sense::click());
-        if resp.hovered() || eye_resp.hovered() || !visible {
+        if (dragging.is_none() && (resp.hovered() || eye_resp.hovered())) || !visible {
             ui.painter().rect_filled(eye, 4, t.panel_bg.gamma_multiply(0.9));
             widgets::paint_icon(ui.painter(), eye.center(), if visible { ic::EYE } else { ic::EYE_OFF }, 14.0, t.text);
         }
@@ -151,7 +220,29 @@ impl PaintApp {
             self.ui.open_menu = Some(MenuKind::Layer(i));
             self.ui.menu_anchor = Rect::from_center_size(ctx.pointer_interact_pos().unwrap_or(card.center()), vec2(1.0, 1.0));
         }
-        resp.on_hover_text(tip);
+        if dragging.is_none() { resp.on_hover_text(tip) } else { resp }
+    }
+
+    /// Where a layer's thumbnail sits inside its card.
+    fn thumb_rect(&self, card: Rect) -> Rect {
+        let inner = card.shrink(6.0);
+        let (w, h) = fit(self.doc.width(), self.doc.height());
+        let s = (inner.width() / w as f32).min(inner.height() / h as f32);
+        Rect::from_center_size(inner.center(), vec2(w as f32 * s, h as f32 * s))
+    }
+
+    /// The semi-transparent card drawn under the pointer while layer `i` is dragged.
+    fn paint_drag_ghost(&mut self, ctx: &egui::Context, t: &crate::theme::Theme, i: usize, card: Rect) {
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("layer-drag-ghost")));
+        let fade = |c: Color32| c.gamma_multiply(GHOST_OPACITY);
+        p.rect(card, 6, fade(t.hover), Stroke::new(1.5, fade(t.accent)), egui::StrokeKind::Inside);
+        let img = self.thumb_rect(card);
+        self.checker.paint_tinted(ctx, &p, img, CHECKER, fade(Color32::WHITE));
+        let layer = &self.doc.layers()[i];
+        if let Some(tex) = self.thumbs.textures.get(&layer.id) {
+            let tint = if layer.visible { Color32::WHITE } else { Color32::from_white_alpha(90) };
+            p.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), fade(tint));
+        }
     }
 
     fn background_card(&mut self, ui: &mut egui::Ui, t: &crate::theme::Theme, card: Rect) {
@@ -168,7 +259,7 @@ impl PaintApp {
         if bg.visible {
             ui.painter().rect_filled(img, 0, super::ribbon::to_egui(bg.color));
         } else {
-            self.checker.paint(&ctx, ui.painter(), img, [Color32::from_gray(255), Color32::from_gray(204)]);
+            self.checker.paint(&ctx, ui.painter(), img, CHECKER);
             widgets::paint_icon(ui.painter(), pos2(card.right() - 14.0, card.top() + 14.0), ic::EYE_OFF, 14.0, t.text);
         }
         ui.painter().rect_stroke(img, 0, Stroke::new(1.0, t.separator), egui::StrokeKind::Outside);
@@ -178,4 +269,34 @@ impl PaintApp {
             self.ui.menu_anchor = Rect::from_center_size(ctx.pointer_interact_pos().unwrap_or(card.center()), vec2(1.0, 1.0));
         }
     }
+}
+
+/// Where a layer dragged from display row `r0` lands when the pointer is at height `y`:
+/// `(slot, layer index)`, where `slot` is the gap (0 = above the first row) the marker is
+/// drawn in. `None` when the drop would leave the layer where it is.
+fn drop_target(rows: &[(usize, egui::Response)], r0: usize, y: f32) -> Option<(usize, usize)> {
+    let n = rows.len();
+    let slot = rows.iter().filter(|(_, r)| r.rect.center().y < y).count();
+    if slot == r0 || slot == r0 + 1 {
+        return None;
+    }
+    let row = if slot > r0 { slot - 1 } else { slot };
+    Some((slot, n - 1 - row))
+}
+
+/// The accent line in the gap where the dragged layer will be dropped.
+fn paint_drop_marker(ui: &egui::Ui, t: &crate::theme::Theme, rows: &[(usize, egui::Response)], slot: usize, list: Rect) {
+    let y = match slot {
+        0 => rows[0].1.rect.top() - GAP / 2.0,
+        s if s == rows.len() => rows[s - 1].1.rect.bottom() + GAP / 2.0,
+        s => (rows[s - 1].1.rect.bottom() + rows[s].1.rect.top()) / 2.0,
+    };
+    let half = (THUMB + 8.0) / 2.0;
+    let x = rows[0].1.rect.center().x;
+    // Not clipped to the scroll area: the slot above the first card sits on its edge.
+    let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), list.expand(GAP));
+    let stroke = Stroke::new(2.5, t.accent);
+    painter.line_segment([pos2(x - half + 3.0, y), pos2(x + half - 3.0, y)], stroke);
+    painter.circle_stroke(pos2(x - half, y), 3.0, stroke);
+    painter.circle_stroke(pos2(x + half, y), 3.0, stroke);
 }

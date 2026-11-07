@@ -40,8 +40,8 @@ pub struct ToolSettings {
     pub pencil: Stroke,
     pub brush_stroke: Stroke,
     pub eraser: Stroke,
-    /// Outline width of shapes (1, 3, 5 or 8 px in Paint).
-    pub shape_width: f32,
+    /// Outline width and opacity of shapes (the side panel's sliders).
+    pub shape_stroke: Stroke,
 }
 
 impl Default for ToolSettings {
@@ -56,13 +56,12 @@ impl Default for ToolSettings {
             pencil: Stroke { size: 1.0, opacity: 1.0 },
             brush_stroke: Stroke { size: 8.0, opacity: 1.0 },
             eraser: Stroke { size: 12.0, opacity: 1.0 },
-            shape_width: 5.0,
+            shape_stroke: Stroke { size: 5.0, opacity: 1.0 },
         }
     }
 }
 
 pub const MAX_SIZE: f32 = 100.0;
-pub const SHAPE_WIDTHS: [f32; 4] = [1.0, 3.0, 5.0, 8.0];
 
 impl ToolSettings {
     /// The size/opacity pair edited by the side panel for `tool`, if it has one.
@@ -71,6 +70,7 @@ impl ToolSettings {
             Tool::Pencil => Some(&mut self.pencil),
             Tool::Brush => Some(&mut self.brush_stroke),
             Tool::Eraser => Some(&mut self.eraser),
+            Tool::Shape => Some(&mut self.shape_stroke),
             _ => None,
         }
     }
@@ -80,6 +80,7 @@ impl ToolSettings {
             Tool::Pencil => Some(self.pencil),
             Tool::Brush => Some(self.brush_stroke),
             Tool::Eraser => Some(self.eraser),
+            Tool::Shape => Some(self.shape_stroke),
             _ => None,
         }
     }

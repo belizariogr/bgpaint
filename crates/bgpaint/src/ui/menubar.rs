@@ -5,7 +5,7 @@ use super::menu::{self, Entry, Preview};
 use super::widgets::{self, IconButton};
 use crate::app::PaintApp;
 use crate::commands::{Command, WallpaperMode, shortcut_label};
-use crate::tools::{SHAPE_WIDTHS, SelectMode};
+use crate::tools::SelectMode;
 use bgpaint_core::io::SaveFormat;
 use bgpaint_core::raster::QuarterTurn;
 use bgpaint_core::shapes::ShapeStyle;
@@ -22,7 +22,6 @@ pub enum MenuKind {
     Brushes,
     Outline,
     Fill,
-    Size,
     Zoom,
     Layer(usize),
     Background,
@@ -317,14 +316,6 @@ impl PaintApp {
                     })
                     .collect()
             }
-            MenuKind::Size => SHAPE_WIDTHS
-                .iter()
-                .map(|&w| {
-                    Entry::item(None, &format!("{w}px"), Command::SetSize(w))
-                        .marked((self.tools.shape_width - w).abs() < 0.1)
-                        .preview(Preview::Line(w))
-                })
-                .collect(),
             MenuKind::Zoom => {
                 let mut v: Vec<Entry<Command>> = crate::canvas::view::PRESETS
                     .iter()

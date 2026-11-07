@@ -51,7 +51,6 @@ pub struct UiState {
     pub open_menu: Option<MenuKind>,
     /// Screen rect of the button that opened the menu (clicking it again closes the menu).
     pub menu_anchor: egui::Rect,
-    pub show_layers: bool,
     pub fullscreen: bool,
     pub thumbnail: bool,
     pub modal: Option<Modal>,
@@ -69,7 +68,6 @@ impl Default for UiState {
         Self {
             open_menu: None,
             menu_anchor: egui::Rect::NOTHING,
-            show_layers: false,
             fullscreen: false,
             thumbnail: false,
             modal: None,
@@ -382,7 +380,7 @@ impl eframe::App for PaintApp {
         if self.settings.show_status_bar {
             self.statusbar(ui);
         }
-        if self.ui.show_layers {
+        if self.settings.show_layers {
             self.layers_panel(ui);
         }
         self.canvas_panel(ui);

@@ -69,9 +69,8 @@ impl PaintApp {
                 self.paint_rulers(ui, &t, full, viewport);
             }
             self.scrollbars(ui, &t, viewport);
-            if matches!(self.tool, Tool::Pencil | Tool::Brush | Tool::Eraser) {
-                self.size_panel(ui, &t, viewport);
-            }
+            // Tools with a size (pencil, brushes, eraser, shapes) get the side sliders.
+            self.size_panel(ui, &t, viewport);
             if self.ui.thumbnail {
                 self.thumbnail_window(&ctx, &t, viewport);
             }
@@ -394,6 +393,10 @@ impl PaintApp {
         }
         if changed && let Some(s) = self.tools.stroke_mut(tool) {
             *s = stroke;
+            if tool == Tool::Shape {
+                // Redraw a shape still being edited with the new width or opacity.
+                self.on_shape_style_changed();
+            }
         }
     }
 
