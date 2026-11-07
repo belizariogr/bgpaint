@@ -28,6 +28,12 @@ pub fn get_image() -> Option<Pixmap> {
     })
 }
 
+/// Reads text from the clipboard.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn get_text() -> Option<String> {
+    with(|c| c.get_text().ok())
+}
+
 /// Whether the clipboard probably holds an image (cheap check used to enable "Paste").
 pub fn has_image() -> bool {
     true

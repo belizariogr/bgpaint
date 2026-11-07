@@ -257,7 +257,8 @@ impl PaintApp {
                 match e {
                     egui::Event::Copy => fired.push(Command::Copy),
                     egui::Event::Cut => fired.push(Command::Cut),
-                    egui::Event::Paste(_) => fired.push(Command::Paste),
+                    // egui-winit sends `PasteImage` when the clipboard holds an image but no text.
+                    egui::Event::Paste(_) | egui::Event::PasteImage(_) => fired.push(Command::Paste),
                     _ => {}
                 }
             }
