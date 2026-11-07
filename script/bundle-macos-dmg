@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Builds the BGPaint installer .dmg from a (signed) BGPaint.app: the same window
+# as BGDesk's (background art, White Drive volume icon, app and Applications
+# side by side). Layout comes from dmgbuild (crates/bgpaint/packaging/macos/
+# dmg-settings.py), command line only: no Finder, no AppleScript, so it works
+# on CI runners.
+#
+#   script/bundle-macos-dmg path/to/BGPaint.app path/to/output.dmg
+#
+# With notarization credentials it notarizes and staples the .app first (in
+# place, so the copy in the image carries its ticket), then the .dmg.
+#
+# Environment:
+#   DMGBUILD                 dmgbuild executable (default: `dmgbuild` on PATH;
+#                            pip install "dmgbuild==1.6.7")
+#   APPLE_SIGNING_IDENTITY   signs the .dmg (Developer ID Application); unset = unsigned
+#   APPLE_KEYCHAIN           keychain holding that identity (default: search list)
+#   Notarization (needs signing), first complete set wins:
+#     APPLE_KEYCHAIN_PROFILE                     notarytool profile
+#     APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID  app-specific password
+#     APPLE_API_KEY + APPLE_API_ISSUER + APPLE_API_KEY_PATH  App Store Connect key (.p8)
+set -euo pipefail
+
+fail() { echo "bundle-macos-dmg: $*" >&2; exit 1; }
+
+[ "$#" -eq 2 ] || fail "usage: $0 BGPaint.app output.dmg"
+app="${1%/}"
+output="$2"
+[ -d "$app/Contents/MacOS" ] || fail "not an app bundle: $app"
+[[ "$output" == *.dmg ]] || fail "output must end in .dmg: $output"
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+assets="$root/crates/bgpaint/packaging/macos"
+dmgbuild="${DMGBUILD:-dmgbuild}"
+command -v "$dmgbuild" >/dev/null || fail "dmgbuild not found (pip install \"dmgbuild==1.6.7\")"
+
+app="$(cd "$(dirname "$app")" && pwd)/$(basename "$app")"
+mkdir -p "$(dirname "$output")"
+output="$(cd "$(dirname "$output")" && pwd)/$(basename "$output")"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+image="$work/$(basename "$output")"
+
+notary=()
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  if [ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]; then
+    notary=(--keychain-profile "$APPLE_KEYCHAIN_PROFILE")
+  elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+    notary=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
+  elif [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] && [ -n "${APPLE_API_KEY_PATH:-}" ]; then
+    notary=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+  else
+    echo "bundle-macos-dmg: signed but not notarized (no notarization credentials)" >&2
+  fi
+fi
+
+notarize() { # file-to-submit
+  local result id status
+  echo "Notarizing $(basename "$1")"
+  result=$(xcrun notarytool submit "$1" --wait --timeout 30m --output-format json "${notary[@]}")
+  id=$(plutil -extract id raw -o - - <<<"$result" 2>/dev/null || true)
+  status=$(plutil -extract status raw -o - - <<<"$result" 2>/dev/null || true)
+  if [ "$status" != Accepted ]; then
+    echo "$result" >&2
+    [ -z "$id" ] || xcrun notarytool log "$id" "${notary[@]}" >&2 || true
+    fail "notarization of $(basename "$1") not accepted (${status:-no status})"
+  fi
+}
+
+# Same pinned binary as BGDesk. Homebrew has no rcodesign formula.
+rcodesign_version=0.22.0
+rcodesign_sha256=7031ee75ca2a55c558071701078517c05d959e012dd87833ac6b4a23c5ff52b9
+rcodesign() {
+  local dir="$work/apple-codesign" name="apple-codesign-$rcodesign_version-macos-universal"
+  if [ ! -x "$dir/rcodesign" ]; then
+    mkdir -p "$dir"
+    curl -fsSL --retry 3 -o "$dir/$name.tar.gz" \
+      "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F$rcodesign_version/$name.tar.gz"
+    echo "$rcodesign_sha256  $dir/$name.tar.gz" | shasum -a 256 -c - >/dev/null \
+      || fail "rcodesign download does not match its pinned SHA-256"
+    tar -xzf "$dir/$name.tar.gz" -C "$dir" --strip-components=1
+  fi
+  "$dir/rcodesign" "$@"
+}
+
+# GitHub's macOS runners lose the stapler's CloudKit connection
+# (api.apple-cloudkit.com, NSURLError -1005, exit 68) on every try, as BGDesk
+# found: retry, then retry over IPv4 only (CI), then fetch the same ticket with
+# rcodesign, which does not use CFNetwork. Other exit codes (invalid or revoked
+# ticket, disk) fail at once.
+staple() { # target
+  local attempt status=0 service
+  for attempt in 1 2 3; do
+    xcrun stapler staple "$1" && return 0 || status=$?
+    [ "$status" = 68 ] || fail "stapler failed on $(basename "$1") ($status)"
+    if [ "$attempt" = 1 ] && [ "${GITHUB_ACTIONS:-}" = true ]; then
+      echo "Stapler lost CloudKit (68); turning IPv6 off on this runner" >&2
+      while IFS= read -r service; do
+        case "$service" in ""|"An asterisk"*|\**) continue ;; esac
+        sudo -n networksetup -setv6off "$service" || true
+      done < <(networksetup -listallnetworkservices | tail -n +2)
+    fi
+    sleep $((attempt * 10))
+  done
+  echo "Stapler cannot reach CloudKit (68); stapling $(basename "$1") with rcodesign" >&2
+  rcodesign staple "$1"
+  stapled_with_rcodesign=1
+}
+
+# `stapler validate` takes the same CloudKit path; a ticket rcodesign attached
+# is then left to spctl, which reads it offline.
+validate() { # target
+  local status=0
+  xcrun stapler validate "$1" || status=$?
+  [ "$status" = 0 ] && return 0
+  [ "$status" = 68 ] && [ "${stapled_with_rcodesign:-0}" = 1 ] \
+    || fail "stapler validate failed on $(basename "$1") ($status)"
+  echo "stapler validate cannot reach CloudKit; spctl checks the attached ticket" >&2
+}
+
+if [ "${#notary[@]}" -gt 0 ]; then
+  codesign --verify --strict --deep --verbose=2 "$app"
+  ditto -c -k --keepParent "$app" "$work/BGPaint.zip"
+  notarize "$work/BGPaint.zip"
+  rm -f "$work/BGPaint.zip"
+  staple "$app"
+  validate "$app"
+  spctl --assess --type execute --verbose=2 "$app"
+fi
+
+"$dmgbuild" -s "$assets/dmg-settings.py" -D app="$app" -D assets="$assets" BGPaint "$image"
+hdiutil verify -quiet "$image"
+
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  sign=(--force --timestamp --sign "$APPLE_SIGNING_IDENTITY"
+        --identifier io.github.belizariogr.bgpaint.diskimage)
+  [ -z "${APPLE_KEYCHAIN:-}" ] || sign+=(--keychain "$APPLE_KEYCHAIN")
+  codesign "${sign[@]}" "$image"
+  codesign --verify --strict --verbose=2 "$image"
+fi
+
+if [ "${#notary[@]}" -gt 0 ]; then
+  # Gatekeeper checks the downloaded .dmg itself, so it carries its own ticket.
+  notarize "$image"
+  staple "$image"
+  validate "$image"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$image"
+fi
+
+mv -f "$image" "$output"
+echo "Wrote $output"
