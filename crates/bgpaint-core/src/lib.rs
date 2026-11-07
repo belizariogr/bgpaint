@@ -15,6 +15,7 @@ pub mod raster;
 pub mod selection;
 pub mod shapes;
 pub mod text;
+pub mod vector;
 
 pub use cosmic_text;
 pub use tiny_skia;

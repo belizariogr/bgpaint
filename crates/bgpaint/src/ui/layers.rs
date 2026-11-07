@@ -58,8 +58,15 @@ impl Thumbnails {
         let (w, h) = fit(app_doc.width(), app_doc.height());
         let ids: Vec<LayerId> = app_doc.layers().iter().map(|l| l.id).collect();
         self.textures.retain(|id, _| ids.contains(id));
+        let (sx, sy) = (w as f32 / app_doc.width() as f32, h as f32 / app_doc.height() as f32);
         for layer in app_doc.layers() {
-            let small = raster::thumbnail(&layer.pixels, w, h);
+            // With its vector objects, as it looks on the canvas: drawn straight at thumbnail
+            // size rather than on a full-size copy of the layer.
+            let mut small = raster::thumbnail(&layer.pixels, w, h);
+            for r in layer.objects.iter().filter_map(|o| o.raster()) {
+                let t = bgpaint_core::tiny_skia::Transform::from_row(sx, 0.0, 0.0, sy, r.x as f32 * sx, r.y as f32 * sy);
+                raster::draw_transformed(&mut small, &r.pixmap, t, true);
+            }
             let img = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], small.data());
             match self.textures.get_mut(&layer.id) {
                 Some(t) => t.set(img, egui::TextureOptions::LINEAR),

@@ -75,7 +75,14 @@ impl PaintApp {
     pub fn fill_at(&mut self, p: Point, secondary: bool) {
         let (x, y) = p.floor_i();
         let color = self.button_color(secondary);
-        let Some(flood) = Flood::at(&self.doc.active_layer().pixels, x, y, 0) else { return };
+        // On a vector object the fill would only go into the pixels hidden under it (its own
+        // colors come from the Shapes tool).
+        if self.doc.vector_mode() && self.doc.object_at(p, 0.0).is_some() {
+            return;
+        }
+        // The area is found on the layer as it looks (vector outlines bound it too); the color goes
+        // into its pixels, under the objects.
+        let Some(flood) = Flood::at(&self.doc.layer_image(self.doc.active_index()), x, y, 0) else { return };
         let change = self.doc.edit_active(flood.bounds(), |layer| flood.paint(layer, color));
         self.history.push_one("fill", change);
     }

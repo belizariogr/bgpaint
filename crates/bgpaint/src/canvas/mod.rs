@@ -40,6 +40,8 @@ impl PaintApp {
 
             let resp = ui.interact(viewport, Id::unique("canvas"), Sense::click_and_drag());
             self.canvas_input(&ctx, &resp, viewport);
+            // One rasterization per frame for the shape being dragged.
+            self.flush_shape();
             self.view.layout(viewport, (self.doc.width(), self.doc.height()), ppp);
 
             // Upload changed pixels.
@@ -215,7 +217,9 @@ impl PaintApp {
                 cursors::paint(ctx, painter, pos, ToolCursor::Picker, self.colors.primary);
                 CursorIcon::None
             }
-            Tool::Shape => self.shape_cursor(pos).unwrap_or(CursorIcon::Crosshair),
+            Tool::Shape => {
+                self.shape_cursor(pos).unwrap_or(if self.vector_pointer() { CursorIcon::Default } else { CursorIcon::Crosshair })
+            }
             Tool::Text => self.text_cursor(pos),
             Tool::Magnifier => CursorIcon::ZoomIn,
             Tool::Select => self.select_cursor(pos),

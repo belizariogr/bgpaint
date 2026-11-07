@@ -58,6 +58,8 @@ pub struct UiState {
     pub ribbon_revealed: bool,
     /// The user manually collapsed the toolbar with the chevron.
     pub ribbon_collapsed: bool,
+    /// The block with the toolbar groups that do not fit the window is open.
+    pub ribbon_overflow: bool,
     /// Horizontal extent of the active tab, where the toolbar's top border is left open so
     /// the tab and the toolbar read as one surface.
     pub active_tab_span: Option<egui::Rangef>,
@@ -73,6 +75,7 @@ impl Default for UiState {
             modal: None,
             ribbon_revealed: false,
             ribbon_collapsed: false,
+            ribbon_overflow: false,
             active_tab_span: None,
         }
     }
@@ -200,6 +203,13 @@ impl PaintApp {
             app.open_path(&cc.egui_ctx, path);
         }
         app.instance = instance.map(|l| l.serve(&cc.egui_ctx, app.files.sender()));
+        // The first document starts in the vector mode last picked, with the Pointer in hand.
+        let vector_mode = app.settings.vector_mode;
+        app.doc.set_vector_mode(vector_mode);
+        if vector_mode {
+            app.tool = crate::tools::Tool::Shape;
+            app.tools.vector_pointer = true;
+        }
         if app.settings.check_updates && crate::update::automatic_checks_allowed() {
             app.updater.check(&cc.egui_ctx, false);
         }
@@ -248,8 +258,9 @@ impl PaintApp {
     }
 
     /// Replaces the document (new/open), resetting history and view.
-    pub fn set_document(&mut self, doc: Document) {
+    pub fn set_document(&mut self, mut doc: Document) {
         self.cancel_interaction();
+        doc.set_vector_mode(self.settings.vector_mode);
         self.doc = doc;
         self.history.clear();
         self.file.saved_state = self.history.state_id();
@@ -261,11 +272,20 @@ impl PaintApp {
         if self.ui.modal.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
+        let typing = self.is_editing_text();
         let mut fired = Vec::new();
         ctx.input_mut(|i| {
             for (sc, cmd) in commands::shortcuts() {
                 if i.consume_shortcut(&sc) {
                     fired.push(cmd);
+                }
+            }
+            // Single keys pick tools, unless a text box on the canvas is taking the letters.
+            if !typing {
+                for (key, cmd) in commands::tool_hotkeys() {
+                    if i.consume_key(egui::Modifiers::NONE, key) {
+                        fired.push(cmd);
+                    }
                 }
             }
             for e in &i.events {

@@ -14,6 +14,7 @@ pub mod print_dialog;
 pub mod ribbon;
 pub mod settings_dialog;
 pub mod statusbar;
+pub mod svg_icon;
 pub mod tab_strip;
 pub mod text_bar;
 pub mod update_dialog;

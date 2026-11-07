@@ -32,7 +32,8 @@ impl Change {
                 doc.swap_pixels(*layer, *x, *y, pixels);
             }
             Change::Document(state) => {
-                let placeholder = DocState { width: 0, height: 0, layers: Vec::new(), active: 0, background: state.background };
+                let placeholder =
+                    DocState { width: 0, height: 0, layers: Vec::new(), active: 0, background: state.background, vector_mode: false };
                 let stored = std::mem::replace(state.as_mut(), placeholder);
                 **state = doc.swap_state(stored);
             }

@@ -2,8 +2,10 @@
 //!
 //! `BGPAINT_SCRIPT=<file>` runs one command per line (coordinates in points, window relative):
 //! `move X Y`, `down X Y [left|right|middle]`, `up X Y [button]`, `click X Y [button]`,
-//! `drag X1 Y1 X2 Y2 [steps] [button]`, `key [ctrl+][shift+][alt+]NAME`, `text STRING`,
-//! `wait FRAMES`, `shot NAME` (PNG in `BGPAINT_SHOT_DIR`), `quit`. Lines starting with `#` are ignored.
+//! `drag X1 Y1 X2 Y2 [steps] [button]`, `burst X1 Y1 X2 Y2 FRAMES PER_FRAME` (a left-button drag
+//! with several pointer moves per frame, like a high-rate mouse), `key [ctrl+][shift+][alt+]NAME`, `text STRING`,
+//! `wait FRAMES`, `resize WIDTH HEIGHT`, `uiscale FACTOR` (interface zoom, like a HiDPI screen),
+//! `shot NAME` (PNG in `BGPAINT_SHOT_DIR`), `quit`. Lines starting with `#` are ignored.
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput};
 use std::collections::VecDeque;
@@ -82,6 +84,22 @@ impl Automation {
                 self.queued.push_back(vec![Self::press(b, button, false)]);
                 self.wait = 2;
             }
+            Some("burst") => {
+                // `burst X1 Y1 X2 Y2 FRAMES PER_FRAME`: a drag with the left button where every
+                // frame carries several pointer moves, like a high-rate mouse.
+                let (a, b) = (Pos2::new(num(1), num(2)), Pos2::new(num(3), num(4)));
+                let frames = (num(5) as usize).max(1);
+                let per = (num(6) as usize).max(1);
+                raw.events.push(Event::PointerMoved(a));
+                self.queued.push_back(vec![Self::press(a, PointerButton::Primary, true)]);
+                let total = frames * per;
+                for f in 0..frames {
+                    let moves = (1..=per).map(|k| Event::PointerMoved(a.lerp(b, (f * per + k) as f32 / total as f32))).collect();
+                    self.queued.push_back(moves);
+                }
+                self.queued.push_back(vec![Self::press(b, PointerButton::Primary, false)]);
+                self.wait = 2;
+            }
             Some("key") => {
                 let spec = parts.get(1).copied().unwrap_or("");
                 let mut modifiers = Modifiers::NONE;
@@ -101,6 +119,8 @@ impl Automation {
             }
             Some("text") => raw.events.push(Event::Text(line.trim_start_matches("text").trim_start().to_owned())),
             Some("wait") => self.wait = num(1) as u32,
+            Some("uiscale") => ctx.set_zoom_factor(num(1)),
+            Some("resize") => ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(num(1), num(2)))),
             Some("shot") => {
                 let path = self.shot_dir.join(format!("{}.png", parts.get(1).copied().unwrap_or("shot")));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {

@@ -42,6 +42,8 @@ pub struct ToolSettings {
     pub eraser: Stroke,
     /// Outline width and opacity of shapes (the side panel's sliders).
     pub shape_stroke: Stroke,
+    /// In vector mode, the Shapes tool is the Pointer: it picks up objects but draws nothing.
+    pub vector_pointer: bool,
 }
 
 impl Default for ToolSettings {
@@ -57,6 +59,7 @@ impl Default for ToolSettings {
             brush_stroke: Stroke { size: 8.0, opacity: 1.0 },
             eraser: Stroke { size: 12.0, opacity: 1.0 },
             shape_stroke: Stroke { size: 5.0, opacity: 1.0 },
+            vector_pointer: false,
         }
     }
 }

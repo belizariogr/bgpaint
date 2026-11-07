@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- The arrow pointer, drawn after the Adwaita cursor's proportions: black with a white
+       border and a soft shadow, the stem ending round. -->
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="0.7"/>
+    </filter>
+    <path id="arrow" d="M3.9 3.7 L3.9 17.4 L7.0 14.3 L9.9 20.0 A1.25 1.25 0 0 0 12.2 19.0 L9.4 13.4 L13.6 13.4 Z"/>
+  </defs>
+  <use href="#arrow" transform="translate(0.3 0.9)" fill="#000" stroke="#000" stroke-width="2.5" stroke-linejoin="miter" stroke-miterlimit="4" opacity="0.3" filter="url(#shadow)"/>
+  <use href="#arrow" fill="#000" stroke="#fff" stroke-width="2.5" stroke-linejoin="miter" stroke-miterlimit="4" paint-order="stroke"/>
+</svg>

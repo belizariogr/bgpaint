@@ -10,6 +10,8 @@ use tiny_skia::{FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pix
 pub enum ShapeKind {
     Line,
     Curve,
+    /// A line with rounded corners ending in an arrowhead.
+    CurvedArrow,
     Oval,
     Rectangle,
     RoundedRectangle,
@@ -31,13 +33,16 @@ pub enum ShapeKind {
     CloudCallout,
     Heart,
     Lightning,
+    /// A crescent (half) moon.
+    Moon,
 }
 
 impl ShapeKind {
     /// All shapes in the order of Paint's gallery.
-    pub const ALL: [ShapeKind; 23] = [
+    pub const ALL: [ShapeKind; 25] = [
         ShapeKind::Line,
         ShapeKind::Curve,
+        ShapeKind::CurvedArrow,
         ShapeKind::Oval,
         ShapeKind::Rectangle,
         ShapeKind::RoundedRectangle,
@@ -59,15 +64,16 @@ impl ShapeKind {
         ShapeKind::CloudCallout,
         ShapeKind::Heart,
         ShapeKind::Lightning,
+        ShapeKind::Moon,
     ];
 
-    /// Shapes defined by points rather than a bounding box.
+    /// Shapes drawn as an open line: no fill, round line ends.
     pub fn is_open(self) -> bool {
-        matches!(self, ShapeKind::Line | ShapeKind::Curve)
+        matches!(self, ShapeKind::Line | ShapeKind::Curve | ShapeKind::CurvedArrow)
     }
 
     pub fn is_point_based(self) -> bool {
-        matches!(self, ShapeKind::Line | ShapeKind::Curve | ShapeKind::Polygon)
+        matches!(self, ShapeKind::Line | ShapeKind::Curve | ShapeKind::CurvedArrow | ShapeKind::Polygon)
     }
 }
 
@@ -178,7 +184,7 @@ pub fn box_shape_path(kind: ShapeKind, r: &RectF) -> Option<Path> {
     let (x, y, w, h) = (r.min.x, r.min.y, r.width().max(1.0), r.height().max(1.0));
     let r = RectF::from_xywh(x, y, w, h);
     match kind {
-        ShapeKind::Line | ShapeKind::Curve | ShapeKind::Polygon => None,
+        ShapeKind::Line | ShapeKind::Curve | ShapeKind::CurvedArrow | ShapeKind::Polygon => None,
         ShapeKind::Oval => PathBuilder::from_oval(tiny_skia::Rect::from_xywh(x, y, w, h)?),
         ShapeKind::Rectangle => Some(PathBuilder::from_rect(tiny_skia::Rect::from_xywh(x, y, w, h)?)),
         ShapeKind::RoundedRectangle => {
@@ -299,6 +305,29 @@ pub fn box_shape_path(kind: ShapeKind, r: &RectF) -> Option<Path> {
             let pts: Vec<(f32, f32)> = P.iter().map(|&(u, v)| (u / 21600.0, v / 21600.0)).collect();
             poly(&pts, &r)
         }
+        ShapeKind::Moon => {
+            // The part of a circle left uncovered by a second, offset circle.
+            let (d, r2) = (0.55f32, 0.85f32);
+            let ix = (1.0 - r2 * r2 + d * d) / (2.0 * d);
+            let iy = (1.0 - ix * ix).sqrt();
+            let outer = iy.atan2(ix);
+            let inner = iy.atan2(ix - d);
+            let n = 48;
+            let mut pts: Vec<(f32, f32)> = (0..=n)
+                .map(|i| {
+                    // Outer circle, the long way round through its left side.
+                    let a = outer + i as f32 / n as f32 * (std::f32::consts::TAU - 2.0 * outer);
+                    (a.cos(), a.sin())
+                })
+                .collect();
+            pts.extend((1..n).map(|i| {
+                // Back along the inner circle's left side.
+                let a = -inner - i as f32 / n as f32 * (std::f32::consts::TAU - 2.0 * inner);
+                (d + r2 * a.cos(), r2 * a.sin())
+            }));
+            normalize(&mut pts);
+            poly(&pts, &r)
+        }
     }
 }
 
@@ -316,6 +345,143 @@ pub fn curve_path(a: Point, c1: Point, c2: Point, b: Point) -> Option<Path> {
     pb.move_to(a.x, a.y);
     pb.cubic_to(c1.x, c1.y, c2.x, c2.y, b.x + if a == b { 0.01 } else { 0.0 }, b.y);
     pb.finish()
+}
+
+/// How round an arrow's corners are: the radius is this share of how far the corner sticks out
+/// from the straight line between its neighbors (never less than [`arrow_min_radius`]). Small
+/// bends stay tight; pulling a corner further out rounds it more, though never into an arch.
+const ARROW_CORNER: f32 = 0.5;
+
+/// The smallest corner radius of an arrow drawn `width` thick: a corner never turns into a point.
+pub fn arrow_min_radius(width: f32) -> f32 {
+    4.0 + width.max(1.0)
+}
+
+/// An arrow through `points`: straight lines with rounded corners, ending at the last point in
+/// a head. The line passes through every point; each inner point sits in the middle of its
+/// corner's arc. Returns the line to stroke, which stops inside the head so its round end never
+/// shows past it, and the head, a triangle filled with the outline style. The head only depends
+/// on the outline `width`: a thicker line gets a bigger head, a longer arrow does not.
+pub fn arrow_parts(points: &[Point], width: f32) -> Option<(Path, Option<Path>)> {
+    let mut pts: Vec<Point> = Vec::with_capacity(points.len());
+    for &p in points {
+        if pts.last().is_none_or(|q: &Point| q.distance(p) > 0.5) {
+            pts.push(p);
+        }
+    }
+    let first = *points.first()?;
+    if pts.len() < 2 {
+        return Some((line_path(first, first)?, None));
+    }
+    let w = width.max(1.0);
+    let (len, half) = arrow_head_size(w);
+    // The line stops where the head is wide enough to cover its round end.
+    let cut = (1.7 * w).max(0.5 * len);
+    let n = pts.len();
+    let corners = arrow_corners(&pts, w, cut);
+    let mut pb = PathBuilder::new();
+    pb.move_to(pts[0].x, pts[0].y);
+    // Where the last straight piece starts.
+    let mut last_start = pts[0];
+    for c in corners.iter().flatten() {
+        let ArrowCorner { vertex: p, u1, u2, reach, turn } = *c;
+        if reach <= 1e-3 {
+            pb.line_to(p.x, p.y);
+            last_start = p;
+            continue;
+        }
+        // A cubic close to the circular arc between the two tangent points.
+        let radius = reach / (turn / 2.0).tan();
+        let handle = 4.0 / 3.0 * (turn / 4.0).tan() * radius;
+        let t1 = Point::new(p.x - u1.x * reach, p.y - u1.y * reach);
+        let t2 = Point::new(p.x + u2.x * reach, p.y + u2.y * reach);
+        pb.line_to(t1.x, t1.y);
+        pb.cubic_to(t1.x + u1.x * handle, t1.y + u1.y * handle, t2.x - u2.x * handle, t2.y - u2.y * handle, t2.x, t2.y);
+        last_start = t2;
+    }
+    let tip = pts[n - 1];
+    let from = corners.iter().rev().flatten().next().map_or(pts[0], |c| c.vertex);
+    let dir = unit(from, tip);
+    let end = if last_start.distance(tip) > cut { Point::new(tip.x - dir.x * cut, tip.y - dir.y * cut) } else { last_start };
+    pb.line_to(end.x + if end == pts[0] { 0.01 } else { 0.0 }, end.y);
+    let back = Point::new(tip.x - dir.x * len, tip.y - dir.y * len);
+    let mut head = PathBuilder::new();
+    head.move_to(tip.x, tip.y);
+    head.line_to(back.x - dir.y * half, back.y + dir.x * half);
+    head.line_to(back.x + dir.y * half, back.y - dir.x * half);
+    head.close();
+    Some((pb.finish()?, head.finish()))
+}
+
+/// A rounded corner: the lines meet at `vertex` (coming in along `u1`, leaving along `u2`, turning
+/// by `turn` radians) and the arc touches them `reach` before and after it.
+#[derive(Clone, Copy)]
+struct ArrowCorner {
+    vertex: Point,
+    u1: Point,
+    u2: Point,
+    reach: f32,
+    turn: f32,
+}
+
+fn unit(from: Point, to: Point) -> Point {
+    let d = from.distance(to).max(1e-6);
+    Point::new((to.x - from.x) / d, (to.y - from.y) / d)
+}
+
+/// The corners of an arrow through `pts` (`None` at both ends). Each inner point is where the
+/// middle of its arc must pass, so the hidden vertex where the straight lines meet sits further
+/// out; the vertices depend on each other, so they are found by a few rounds of refinement.
+fn arrow_corners(pts: &[Point], w: f32, cut: f32) -> Vec<Option<ArrowCorner>> {
+    let n = pts.len();
+    let min_radius = arrow_min_radius(w);
+    let mut vertex = pts.to_vec();
+    let corner = |vertex: &[Point], i: usize| -> ArrowCorner {
+        let (a, p, b) = (vertex[i - 1], vertex[i], vertex[i + 1]);
+        let (u1, u2) = (unit(a, p), unit(p, b));
+        let turn = (u1.x * u2.x + u1.y * u2.y).clamp(-1.0, 1.0).acos();
+        if turn < 0.01 {
+            return ArrowCorner { vertex: p, u1, u2, reach: 0.0, turn };
+        }
+        // How far the point sticks out from the line between its neighbors.
+        let q = pts[i];
+        let ab = a.distance(b);
+        let out = if ab < 1e-3 { a.distance(q) } else { ((b.x - a.x) * (a.y - q.y) - (a.x - q.x) * (b.y - a.y)).abs() / ab };
+        let radius = (ARROW_CORNER * out).max(min_radius);
+        let (seg_in, seg_out) = (a.distance(p), p.distance(b));
+        // Each straight piece is shared with the neighbor corner; the last one keeps room for
+        // the head.
+        let room_in = if i == 1 { seg_in } else { seg_in / 2.0 };
+        let room_out = if i == n - 2 { (seg_out - cut).max(seg_out / 2.0) } else { seg_out / 2.0 };
+        let reach = (radius * (turn / 2.0).tan()).min(room_in).min(room_out).max(0.0);
+        ArrowCorner { vertex: p, u1, u2, reach, turn }
+    };
+    // Converges quickly for gentle corners and more slowly for hairpins; stop once the
+    // vertices have settled (cheap: a few points, a few hundred rounds at most).
+    for _ in 0..400 {
+        let mut moved = 0.0f32;
+        for i in 1..n - 1 {
+            let c = corner(&vertex, i);
+            // The arc's middle lies `reach * tan(turn / 4)` inside the vertex, along the
+            // bisector; put the vertex that far outside the point.
+            let outward = Point::new(c.u1.x - c.u2.x, c.u1.y - c.u2.y);
+            let m = (outward.x * outward.x + outward.y * outward.y).sqrt();
+            let e = if c.reach > 0.0 && m > 1e-6 { c.reach * (c.turn / 4.0).tan() / m } else { 0.0 };
+            let next = Point::new(pts[i].x + outward.x * e, pts[i].y + outward.y * e);
+            moved = moved.max(next.distance(vertex[i]));
+            vertex[i] = next;
+        }
+        if moved < 0.005 {
+            break;
+        }
+    }
+    (0..n).map(|i| (i > 0 && i < n - 1).then(|| corner(&vertex, i))).collect()
+}
+
+/// Length and half-width of an arrowhead for an outline `width` pixels thick.
+pub fn arrow_head_size(width: f32) -> (f32, f32) {
+    let len = 2.5 * width.max(1.0) + 7.0;
+    (len, len * 0.45)
 }
 
 /// Path of a free polygon.
@@ -341,16 +507,46 @@ pub struct RasterShape {
     pub pixmap: Pixmap,
     pub x: i32,
     pub y: i32,
+    /// Part of the shape fell outside the canvas and is missing from `pixmap`.
+    pub clipped: bool,
 }
 
 impl RasterShape {
     pub fn bounds(&self) -> PixelRect {
         PixelRect::from_xywh(self.x, self.y, self.pixmap.width(), self.pixmap.height())
     }
+
+    /// Whether a visible pixel of the shape lies within `tol` pixels of `p` (canvas coords).
+    pub fn hit(&self, p: Point, tol: f32) -> bool {
+        let reach = tol.max(0.0).ceil() as i32;
+        let (cx, cy) = p.floor_i();
+        let (w, h) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
+        let data = self.pixmap.data();
+        for y in (cy - reach - self.y).max(0)..=(cy + reach - self.y).min(h - 1) {
+            for x in (cx - reach - self.x).max(0)..=(cx + reach - self.x).min(w - 1) {
+                if data[(y as usize * w as usize + x as usize) * 4 + 3] > 24 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Rasterizes `path` (already in canvas coordinates) clipped to the canvas.
 pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, canvas_h: u32) -> Option<RasterShape> {
+    rasterize_with_head(path, None, paint, closed, canvas_w, canvas_h)
+}
+
+/// Like [`rasterize`], plus an arrowhead `head` filled with the outline's style and color.
+pub fn rasterize_with_head(
+    path: &Path,
+    head: Option<&Path>,
+    paint: &ShapePaint,
+    closed: bool,
+    canvas_w: u32,
+    canvas_h: u32,
+) -> Option<RasterShape> {
     let outline = (paint.outline != ShapeStyle::None || !closed).then(|| {
         let style = if paint.outline == ShapeStyle::None { ShapeStyle::Solid } else { paint.outline };
         let stroke = Stroke {
@@ -364,8 +560,20 @@ pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, c
     // The outline's own extent: mitered corners reach up to `miter_limit * width / 2` past a
     // vertex, far more than the width itself on sharp corners of thick outlines.
     let b = outline.as_ref().and_then(|(_, s)| path.stroke(s, 1.0)).map_or(path.bounds(), |o| o.bounds());
+    let b = head
+        .and_then(|h| {
+            let hb = h.bounds();
+            tiny_skia::Rect::from_ltrb(
+                b.left().min(hb.left()),
+                b.top().min(hb.top()),
+                b.right().max(hb.right()),
+                b.bottom().max(hb.bottom()),
+            )
+        })
+        .unwrap_or(b);
     let pad = 2.0;
-    let area = PixelRect::enclosing(b.left() - pad, b.top() - pad, b.right() + pad, b.bottom() + pad).clamp_to(canvas_w, canvas_h);
+    let whole = PixelRect::enclosing(b.left() - pad, b.top() - pad, b.right() + pad, b.bottom() + pad);
+    let area = whole.clamp_to(canvas_w, canvas_h);
     if area.is_empty() {
         return None;
     }
@@ -376,6 +584,9 @@ pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, c
     }
     if let Some((style, stroke)) = &outline {
         draw_styled(&mut out, path, Some(stroke), *style, paint.outline_color, to_local, area);
+        if let Some(head) = head {
+            draw_styled(&mut out, head, None, *style, paint.outline_color, to_local, area);
+        }
     }
     // Faded as one piece, so the outline over the fill does not get darker.
     let opacity = (paint.opacity.clamp(0.0, 1.0) * 255.0).round() as u16;
@@ -384,7 +595,7 @@ pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, c
             *c = crate::color::mul_div255(u16::from(*c), opacity);
         }
     }
-    Some(RasterShape { pixmap: out, x: area.x0, y: area.y0 })
+    Some(RasterShape { pixmap: out, x: area.x0, y: area.y0, clipped: area != whole })
 }
 
 fn draw_styled(out: &mut Pixmap, path: &Path, stroke: Option<&Stroke>, style: ShapeStyle, color: Color, ts: Transform, area: PixelRect) {
@@ -445,7 +656,8 @@ mod tests {
                 continue;
             }
             let p = box_shape_path(kind, &r).unwrap_or_else(|| panic!("{kind:?}"));
-            let b = p.bounds();
+            // The drawn outline, not the control points of its curves.
+            let b = p.compute_tight_bounds().unwrap();
             assert!(b.left() >= 9.0 && b.top() >= 19.0 && b.right() <= 111.0 && b.bottom() <= 81.0, "{kind:?} {b:?}");
             assert!(b.width() > 50.0 && b.height() > 30.0, "{kind:?} {b:?}");
         }

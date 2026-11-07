@@ -42,6 +42,8 @@ pub struct Settings {
     pub show_status_bar: bool,
     /// The Layers panel stays as the user last left it.
     pub show_layers: bool,
+    /// Vector mode as last picked: new and opened documents start with it.
+    pub vector_mode: bool,
     pub auto_hide_toolbar: bool,
     pub window_size: Option<(f32, f32)>,
     pub maximized: bool,
@@ -66,6 +68,7 @@ impl Default for Settings {
             show_grid: false,
             show_status_bar: true,
             show_layers: false,
+            vector_mode: false,
             auto_hide_toolbar: false,
             window_size: None,
             maximized: false,

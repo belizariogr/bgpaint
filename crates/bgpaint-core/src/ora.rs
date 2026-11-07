@@ -34,7 +34,8 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, IoError> {
     for (i, layer) in doc.layers().iter().enumerate().rev() {
         let src = format!("data/layer{i}.png");
         zip.start_file(src.as_str(), stored).map_err(zip_err)?;
-        zip.write_all(&encode(&layer.pixels, SaveFormat::Png)?)?;
+        // Vector objects are saved drawn into their layer: the format only stores images.
+        zip.write_all(&encode(&doc.layer_image(i), SaveFormat::Png)?)?;
         stack.push_str(&format!(
             "  <layer name=\"{}\" src=\"{src}\" x=\"0\" y=\"0\" opacity=\"1.0\" visibility=\"{}\"{}/>\n",
             escape(&layer.name),
