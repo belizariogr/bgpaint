@@ -34,11 +34,20 @@ Release. Pushing a `v*` tag yourself makes a draft release instead.
 | OS | Packages |
 |---|---|
 | macOS (Apple silicon, Intel) | `BGPaint.app` inside a `.dmg` (min. macOS 10.15.7) |
-| Linux x86_64 | `.deb`, `.AppImage`, pacman `.tar.gz` + `PKGBUILD`, and the `bgpaint-linux-x86_64.tar.gz` that `install.sh` unpacks |
+| Linux x86_64 | `.deb`, `.AppImage`, pacman `.pkg.tar.zst` (plus its `.tar.gz` + `PKGBUILD`), and the `bgpaint-linux-x86_64.tar.gz` that `install.sh` unpacks |
 
 macOS builds are signed with a Developer ID certificate and notarized (the
 `.app` and the `.dmg`) when the `APPLE_*` repository secrets are set; without
 them the packages are still built, unsigned.
+
+On Arch Linux, install (or update) the release package with pacman:
+
+```sh
+sudo pacman -U https://github.com/belizariogr/bgpaint/releases/download/v<version>/bgpaint-<version>-1-x86_64.pkg.tar.zst
+```
+
+It is made by `script/bundle-pacman <dir with PKGBUILD and tarball> <out dir>`
+(needs `makepkg`) from cargo-packager's pacman output.
 
 On Linux, these scripts install without a package manager. Only the
 system-wide one needs root:
