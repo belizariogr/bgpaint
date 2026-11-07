@@ -145,14 +145,16 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-22.04
             formats: deb,appimage,pacman
+          # macOS 26 runners link with the macOS 26 SDK, which AppKit requires to draw the
+          # current window chrome (traffic lights, corners); the build checks it below.
           - name: macos-aarch64
-            os: macos-15
+            os: macos-26
             target: aarch64-apple-darwin
             # The .dmg comes from script/bundle-macos-dmg (BGDesk's window).
             formats: app
           # Cross-compiled on Apple silicon: no dependence on Intel runner images.
           - name: macos-x86_64
-            os: macos-15
+            os: macos-26
             target: x86_64-apple-darwin
             formats: app
     env:
@@ -210,6 +212,16 @@ jobs:
       # own before-packaging build is then a no-op.
       - name: Build release binary
         run: cargo build --release -p bgpaint
+
+      # AppKit keeps the old look (smaller traffic lights, title bar metrics) for apps linked
+      # with an SDK older than macOS 26, whatever macOS they run on.
+      - name: Check the macOS SDK
+        if: runner.os == 'macOS'
+        run: |
+          bin="target/${{ matrix.target }}/release/bgpaint"
+          sdk=$(vtool -show-build "$bin" | awk '$1 == "sdk" { print $2 }')
+          echo "$bin: linked with the macOS $sdk SDK"
+          [ "${sdk%%.*}" -ge 26 ] || { echo "::error::Linked with the macOS $sdk SDK; macOS 26 or newer is needed."; exit 1; }
 
       # A keychain of our own instead of the packager's: the packager deletes
       # its keychain right after signing the .app, and the .dmg is signed later.

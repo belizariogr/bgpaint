@@ -26,7 +26,7 @@ impl PaintApp {
         let tr = self.tr;
         let popup_id = Id::unique("text-bar-popup");
         let mut popup: Popup = ctx.data(|d| d.get_temp(popup_id)).unwrap_or_default();
-        let top = crate::ui::menubar::MENUBAR_HEIGHT + if self.ribbon_visible() { crate::ui::ribbon::RIBBON_HEIGHT } else { 10.0 } + 4.0;
+        let top = crate::ui::menubar::menubar_height() + if self.ribbon_visible() { crate::ui::ribbon::RIBBON_HEIGHT } else { 10.0 } + 4.0;
         let width = 710.0;
         let screen = ctx.content_rect();
         let left = (screen.center().x - width / 2.0).max(screen.left() + 8.0);

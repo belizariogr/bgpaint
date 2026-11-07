@@ -13,6 +13,8 @@ mod files;
 mod i18n;
 #[cfg(target_os = "macos")]
 mod mac_menu;
+#[cfg(target_os = "macos")]
+mod mac_titlebar;
 mod platform;
 mod settings;
 mod system;
@@ -38,7 +40,8 @@ fn main() -> eframe::Result {
         .with_maximized(settings.maximized)
         .with_drag_and_drop(true);
     // On macOS the tab row doubles as the title bar: the content runs under a transparent title
-    // bar and the traffic lights sit at the start of the row (see `ui::menubar`).
+    // bar and AppKit's own traffic lights sit at the start of the row, which is sized around them
+    // (see `mac_titlebar`).
     #[cfg(target_os = "macos")]
     {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);

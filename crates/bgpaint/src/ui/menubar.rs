@@ -29,8 +29,14 @@ pub enum MenuKind {
     Canvas(egui::Pos2),
 }
 
-/// On macOS the row is also the title bar, so it is shorter and centered on the traffic lights.
-pub const MENUBAR_HEIGHT: f32 = if cfg!(target_os = "macos") { 32.0 } else { 40.0 };
+/// Height of the top row. On macOS the row is also the title bar, so it is shorter and as tall as
+/// AppKit's title bar, which centers the traffic lights in it.
+pub fn menubar_height() -> f32 {
+    #[cfg(target_os = "macos")]
+    return crate::mac_titlebar::title_bar().height;
+    #[cfg(not(target_os = "macos"))]
+    40.0
+}
 
 impl PaintApp {
     pub fn toggle_menu(&mut self, kind: MenuKind, anchor: Rect) {
@@ -44,15 +50,19 @@ impl PaintApp {
 
     pub fn menubar(&mut self, ui: &mut egui::Ui) {
         let t = self.theme.clone();
-        egui::Panel::top("menubar").exact_size(MENUBAR_HEIGHT).show_separator_line(false).frame(egui::Frame::NONE.fill(t.window_bg)).show(
-            ui,
-            |ui| {
+        egui::Panel::top("menubar")
+            .exact_size(menubar_height())
+            .show_separator_line(false)
+            .frame(egui::Frame::NONE.fill(t.window_bg))
+            .show(ui, |ui| {
                 let r = ui.max_rect();
                 let cy = r.center().y;
+                // Buttons fill the row, up to 32 pt (the row can be shorter on macOS).
+                let bh = r.height().min(32.0);
+                #[cfg(target_os = "macos")]
+                let mut x = title_bar(ui, r);
+                #[cfg(not(target_os = "macos"))]
                 let mut x = r.left() + 4.0;
-                if cfg!(target_os = "macos") {
-                    x = title_bar(ui, r);
-                }
                 // On macOS these menus live in the global menu bar (see `mac_menu`).
                 let in_window_menus: &[(MenuKind, &str)] = if cfg!(target_os = "macos") {
                     &[]
@@ -61,7 +71,7 @@ impl PaintApp {
                 };
                 for &(kind, text) in in_window_menus {
                     let w = widgets::text_width(ui, text, egui::FontId::proportional(14.0)) + 20.0;
-                    let rect = Rect::from_min_size(pos2(x, cy - 16.0), vec2(w, 32.0));
+                    let rect = Rect::from_min_size(pos2(x, cy - bh / 2.0), vec2(w, bh));
                     let resp = ui.interact(rect, Id::unique(("menubar", text)), Sense::click());
                     let open = self.ui.open_menu == Some(kind);
                     let fill = if open { t.hover } else { widgets::state_fill(&t, &resp, true) };
@@ -85,7 +95,7 @@ impl PaintApp {
                 }
                 let quick = [(ic::SAVE, Command::Save, self.tr.save, true), (ic::SHARE, Command::Share, self.tr.share, true)];
                 for (glyph, cmd, tip, enabled) in quick {
-                    let rect = Rect::from_min_size(pos2(x, cy - 16.0), vec2(36.0, 32.0));
+                    let rect = Rect::from_min_size(pos2(x, cy - bh / 2.0), vec2(36.0, bh));
                     let tip = match shortcut_label(ui.ctx(), &cmd) {
                         Some(s) => format!("{tip} ({s})"),
                         None => tip.to_owned(),
@@ -107,7 +117,7 @@ impl PaintApp {
                 if let Some(cmd) = super::tab_strip::show(self, ui, &t, strip) {
                     self.execute(ui.ctx(), cmd);
                 }
-                let rect = Rect::from_min_size(pos2(r.right() - 44.0, cy - 16.0), vec2(36.0, 32.0));
+                let rect = Rect::from_min_size(pos2(r.right() - 44.0, cy - bh / 2.0), vec2(36.0, bh));
                 if IconButton::new(ic::SETTINGS)
                     .size(18.0)
                     .tooltip(self.tr.settings)
@@ -116,8 +126,7 @@ impl PaintApp {
                 {
                     self.execute(ui.ctx(), Command::OpenSettings);
                 }
-            },
-        );
+            });
     }
 
     /// Renders the open dropdown menu (if any) and dispatches its action.
@@ -421,12 +430,10 @@ impl PaintApp {
     }
 }
 
-/// Width the macOS traffic lights (close, minimize, zoom) take at the start of the row.
-const TRAFFIC_LIGHTS: f32 = 78.0;
-
 /// Makes the row behave as the macOS title bar: the empty parts drag the window and a double
 /// click zooms it. Must run before the row's widgets so they stay on top of it. Returns where the
 /// row's content starts, past the traffic lights (hidden in full screen).
+#[cfg(target_os = "macos")]
 fn title_bar(ui: &mut egui::Ui, r: Rect) -> f32 {
     let resp = ui.interact(r, Id::unique("title-bar"), Sense::click_and_drag());
     let (fullscreen, maximized) = ui.ctx().input(|i| (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false)));
@@ -435,7 +442,7 @@ fn title_bar(ui: &mut egui::Ui, r: Rect) -> f32 {
     } else if resp.drag_started() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
-    r.left() + if fullscreen { 8.0 } else { TRAFFIC_LIGHTS }
+    r.left() + if fullscreen { 8.0 } else { crate::mac_titlebar::title_bar().content_left }
 }
 
 fn menu_height(entries: &[Entry<Command>]) -> f32 {
