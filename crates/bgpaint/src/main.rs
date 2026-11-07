@@ -28,12 +28,15 @@ use std::time::Instant;
 
 fn main() -> eframe::Result {
     let started = Instant::now();
+    // Linux only, read while the window is created.
+    platform::refresh_desktop_theme();
     let settings = settings::Settings::load();
     let open: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(std::path::PathBuf::from).collect();
     let (w, h) = settings.window_size.unwrap_or((1280.0, 800.0));
+    let tr = i18n::detect();
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title(format!("{} - {}", i18n::detect().untitled, i18n::detect().app_name))
+        .with_title(format!("{} - {}", tr.untitled, tr.app_name))
         .with_app_id("io.github.belizariogr.bgpaint")
         .with_inner_size([w.max(640.0), h.max(480.0)])
         .with_min_inner_size([720.0, 480.0])
