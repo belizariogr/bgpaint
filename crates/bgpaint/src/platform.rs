@@ -10,16 +10,16 @@ pub fn open_url(url: &str) {
     let _ = Command::new(program).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
-fn run(program: &str, args: &[&str]) -> bool {
+pub(crate) fn run(program: &str, args: &[&str]) -> bool {
     Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
-fn output(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn has(program: &str) -> bool {
+pub(crate) fn has(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
 }
 

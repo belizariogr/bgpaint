@@ -27,6 +27,8 @@ pub struct Settings {
     pub window_size: Option<(f32, f32)>,
     pub maximized: bool,
     pub last_dir: Option<PathBuf>,
+    /// Look for a new release at startup (and install it, see [`crate::update`]).
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +45,7 @@ impl Default for Settings {
             window_size: None,
             maximized: false,
             last_dir: None,
+            check_updates: true,
         }
     }
 }

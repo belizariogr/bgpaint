@@ -320,7 +320,8 @@ jobs:
             target/**/release/bgpaint-linux-*.tar.gz
             target/**/release/*.deb
             target/**/release/*.AppImage
-            target/**/release/BGPaint_*.tar.gz
+            # The pacman package (bgpaint_<version>_<arch>.tar.gz), which PKGBUILD's source= names.
+            target/**/release/bgpaint_*.tar.gz
             target/**/release/PKGBUILD
             target/**/release/*.dmg
             script/install.sh

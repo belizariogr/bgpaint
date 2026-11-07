@@ -124,6 +124,12 @@ impl PaintApp {
                 self.ui.open_menu = None;
                 self.ui.modal = Some(crate::ui::dialogs::Modal::Settings);
             }
+            Command::CheckForUpdates => {
+                self.commit_interaction();
+                self.ui.open_menu = None;
+                self.updater.check(ctx, true);
+                self.ui.modal = Some(crate::ui::dialogs::Modal::Settings);
+            }
             Command::EditColors => self.open_color_dialog(crate::ui::color_target::ColorTarget::Active),
             Command::AddLayer => self.layer_op("add layer", |d| {
                 d.add_layer();

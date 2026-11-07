@@ -73,6 +73,9 @@ pub enum Command {
     ToggleThumbnail,
     ToggleLayersPanel,
     OpenSettings,
+    /// From the macOS app menu; elsewhere the button in Settings checks.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    CheckForUpdates,
     EditColors,
     AddLayer,
     DuplicateLayer(usize),
