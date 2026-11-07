@@ -119,9 +119,13 @@ pub fn text_width(ui: &Ui, text: &str, font: FontId) -> f32 {
     ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x)
 }
 
-/// Fluent accent ("primary") button.
+/// The accent ("primary") button: Fluent on Linux, AppKit's default push button on macOS.
 pub fn accent_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+    if cfg!(target_os = "macos") {
+        mac::push_button(ui.painter(), t, rect, resp.is_pointer_button_down_on(), true, true, text);
+        return resp;
+    }
     let fill = if resp.is_pointer_button_down_on() {
         t.accent.gamma_multiply(0.85)
     } else if resp.hovered() {
@@ -134,7 +138,7 @@ pub fn accent_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response
     resp
 }
 
-/// Fluent standard button.
+/// A standard button: Fluent on Linux, AppKit's push button on macOS.
 pub fn standard_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
     paint_standard_button(ui, t, rect, &resp, text, true);
@@ -142,6 +146,10 @@ pub fn standard_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Respon
 }
 
 pub fn paint_standard_button(ui: &Ui, t: &Theme, rect: Rect, resp: &Response, text: &str, enabled: bool) {
+    if cfg!(target_os = "macos") {
+        mac::push_button(ui.painter(), t, rect, enabled && resp.is_pointer_button_down_on(), enabled, false, text);
+        return;
+    }
     let fill = if !enabled || resp.is_pointer_button_down_on() {
         t.button_bg
     } else if resp.hovered() {
@@ -153,8 +161,144 @@ pub fn paint_standard_button(ui: &Ui, t: &Theme, rect: Rect, resp: &Response, te
     label(ui.painter(), rect.center(), Align2::CENTER_CENTER, text, 14.0, if enabled { t.text } else { t.text_disabled });
 }
 
+/// A combo box showing `text` in a 32 pt row; click it to open its list. Fluent on Linux,
+/// AppKit's pop-up button on macOS.
+pub fn combo_box(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+    paint_combo_box(ui, t, rect, &resp, text, 14.0, false);
+    resp
+}
+
+/// Paints a combo box into `rect`; `open` while its list is showing.
+pub fn paint_combo_box(ui: &Ui, t: &Theme, rect: Rect, resp: &Response, text: &str, size: f32, open: bool) {
+    if cfg!(target_os = "macos") {
+        mac::pop_up_button(ui.painter(), t, rect, resp.is_pointer_button_down_on() || open, text);
+        return;
+    }
+    let fill = if open || resp.hovered() { t.button_hover } else { t.button_bg };
+    ui.painter().rect(rect, RADIUS, fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
+    label(ui.painter(), pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, text, size, t.text);
+    paint_chevron(ui.painter(), pos2(rect.right() - 14.0, rect.center().y), t.text, 12.0);
+}
+
+/// AppKit look-alikes, used on macOS. Controls are drawn at their native regular size, centered
+/// in the row the Fluent layout reserved, so dialog layouts are shared between platforms.
+pub mod mac {
+    use super::*;
+
+    /// Height of a regular-size push button, pop-up button and text field.
+    pub const CONTROL_HEIGHT: f32 = 24.0;
+    pub const CONTROL_RADIUS: u8 = 6;
+    /// The size of `NSFont.systemFontSize`.
+    pub const FONT_SIZE: f32 = 13.0;
+
+    pub fn font() -> FontId {
+        FontId::new(FONT_SIZE, theme::system())
+    }
+
+    /// `NSColor.controlAccentColor` (the default blue) for the theme.
+    pub fn accent(t: &Theme) -> Color32 {
+        if t.dark { Color32::from_rgb(0x0A, 0x84, 0xFF) } else { Color32::from_rgb(0x00, 0x7A, 0xFF) }
+    }
+
+    /// The control's box: full row width, native height, vertically centered.
+    pub fn control_rect(row: Rect) -> Rect {
+        Rect::from_center_size(row.center(), vec2(row.width(), CONTROL_HEIGHT))
+    }
+
+    /// Paints the bezel shared by push and pop-up buttons and returns the box.
+    fn bezel(p: &egui::Painter, t: &Theme, row: Rect, pressed: bool, default: bool) -> Rect {
+        let r = control_rect(row);
+        let radius = CornerRadius::same(CONTROL_RADIUS);
+        if default {
+            let fill = if pressed { lerp_color(accent(t), Color32::BLACK, 0.18) } else { accent(t) };
+            p.rect_filled(r, radius, fill);
+        } else if t.dark {
+            // A translucent light fill with a brighter top edge.
+            p.rect_filled(r, radius, Color32::from_white_alpha(if pressed { 96 } else { 60 }));
+            p.hline(r.left() + 4.0..=r.right() - 4.0, r.top() + 0.5, Stroke::new(1.0, Color32::from_white_alpha(28)));
+        } else {
+            // White with a hairline border and a soft shadow below.
+            p.rect_filled(r.translate(vec2(0.0, 0.5)), radius, Color32::from_black_alpha(26));
+            p.rect(
+                r,
+                radius,
+                if pressed { Color32::from_gray(226) } else { Color32::WHITE },
+                Stroke::new(1.0, Color32::from_black_alpha(30)),
+                StrokeKind::Inside,
+            );
+        }
+        r
+    }
+
+    /// `NSButton` with the push bezel; `default` is the blue key-equivalent (Return) button.
+    pub fn push_button(p: &egui::Painter, t: &Theme, row: Rect, pressed: bool, enabled: bool, default: bool, text: &str) {
+        let r = bezel(p, t, row, pressed, default && enabled);
+        let color = match (enabled, default) {
+            (false, _) => t.text_disabled,
+            (true, true) => Color32::WHITE,
+            (true, false) => t.text,
+        };
+        p.text(r.center(), Align2::CENTER_CENTER, text, font(), color);
+    }
+
+    /// `NSPopUpButton`: the push bezel with the selected item on the left and the up/down
+    /// chevrons on the right.
+    pub fn pop_up_button(p: &egui::Painter, t: &Theme, row: Rect, pressed: bool, text: &str) {
+        let r = bezel(p, t, row, pressed, false);
+        let clip = p.with_clip_rect(r.shrink2(vec2(9.0, 0.0)).with_max_x(r.right() - 22.0).intersect(p.clip_rect()));
+        clip.text(pos2(r.left() + 9.0, r.center().y), Align2::LEFT_CENTER, text, font(), t.text);
+        let c = pos2(r.right() - 12.0, r.center().y);
+        let stroke = Stroke::new(1.4, t.text);
+        let (w, h) = (3.2, 2.6);
+        p.line(vec![pos2(c.x - w, c.y - 1.6), pos2(c.x, c.y - 1.6 - h), pos2(c.x + w, c.y - 1.6)], stroke);
+        p.line(vec![pos2(c.x - w, c.y + 1.6), pos2(c.x, c.y + 1.6 + h), pos2(c.x + w, c.y + 1.6)], stroke);
+    }
+
+    /// `NSButton` with the radio style: a 16 pt circle, filled with the accent color and a white
+    /// dot when selected, and its title 6 pt to the right. Takes a 32 pt row like the Fluent one.
+    pub fn radio(ui: &mut Ui, t: &Theme, selected: bool, text: &str) -> Response {
+        const D: f32 = 16.0;
+        let w = D + 6.0 + text_width(ui, text, font()) + 14.0;
+        let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
+        let c = pos2(rect.left() + D / 2.0, rect.center().y);
+        let pressed = resp.is_pointer_button_down_on();
+        let p = ui.painter();
+        if selected {
+            let fill = if pressed { lerp_color(accent(t), Color32::BLACK, 0.18) } else { accent(t) };
+            p.circle_filled(c, D / 2.0, fill);
+            p.circle_filled(c, 3.0, Color32::WHITE);
+        } else if t.dark {
+            p.circle(
+                c,
+                D / 2.0 - 0.5,
+                Color32::from_white_alpha(if pressed { 70 } else { 36 }),
+                Stroke::new(1.0, Color32::from_white_alpha(44)),
+            );
+        } else {
+            p.circle_filled(c + vec2(0.0, 0.5), D / 2.0, Color32::from_black_alpha(22));
+            p.circle(
+                c,
+                D / 2.0 - 0.5,
+                if pressed { Color32::from_gray(226) } else { Color32::WHITE },
+                Stroke::new(1.0, Color32::from_black_alpha(52)),
+            );
+        }
+        p.text(pos2(rect.left() + D + 6.0, c.y), Align2::LEFT_CENTER, text, font(), t.text);
+        resp
+    }
+
+    fn lerp_color(a: Color32, b: Color32, f: f32) -> Color32 {
+        let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * f).round() as u8;
+        Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+    }
+}
+
 /// Fluent radio button with a label; returns the click response.
 pub fn radio(ui: &mut Ui, t: &Theme, selected: bool, text: &str) -> Response {
+    if cfg!(target_os = "macos") {
+        return mac::radio(ui, t, selected, text);
+    }
     let w = 28.0 + text_width(ui, text, FontId::proportional(14.0));
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
     let c = pos2(rect.left() + 10.0, rect.center().y);
@@ -192,8 +336,12 @@ pub fn paint_checkbox(p: &egui::Painter, t: &Theme, center: Pos2, checked: bool,
     }
 }
 
-/// A Fluent text field; returns the inner response. `width` in points.
+/// A text field; returns the inner response. `width` in points. Fluent on Linux; on macOS it
+/// follows AppKit's rounded text field instead (see [`mac_text_field`]).
 pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id) -> Response {
+    if cfg!(target_os = "macos") {
+        return mac_text_field(ui, t, value, width, id);
+    }
     let (rect, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
     // The editor spans the whole field height so its text is centered vertically.
     let inner = rect.shrink2(vec2(10.0, 1.0));
@@ -212,6 +360,48 @@ pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id
     let line = if resp.has_focus() { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, t.input_underline) };
     let y = rect.bottom() - line.width / 2.0;
     ui.painter().hline(rect.left() + 1.0..=rect.right() - 1.0, y, line);
+    resp
+}
+
+/// AppKit's text field: a regular-size rounded box with a hairline border, the system font at 13 pt,
+/// the accent-colored insertion point and selection, and the soft focus ring drawn outside the
+/// box. Takes the same 32 pt row as the Fluent field so dialog layouts stay put.
+fn mac_text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id) -> Response {
+    // NSColor.controlAccentColor and NSColor.selectedTextBackgroundColor.
+    let accent = mac::accent(t);
+    let selection = if t.dark { Color32::from_rgb(0x3F, 0x63, 0x8B) } else { Color32::from_rgb(0xB3, 0xD7, 0xFF) };
+    let (bg, border) = if t.dark {
+        (Color32::from_white_alpha(14), Color32::from_white_alpha(38))
+    } else {
+        (Color32::WHITE, Color32::from_black_alpha(46))
+    };
+    let (row, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
+    let rect = mac::control_rect(row);
+    let radius = CornerRadius::same(mac::CONTROL_RADIUS);
+    let p = ui.painter();
+    p.rect(rect, radius, bg, Stroke::new(1.0, border), StrokeKind::Inside);
+    let inner = rect.shrink2(vec2(7.0, 0.0));
+    let edit = egui::TextEdit::singleline(value)
+        .id(id)
+        .frame(egui::Frame::NONE)
+        .margin(egui::Margin::ZERO)
+        .font(mac::font())
+        .text_color(t.text)
+        .align(egui::Align2::LEFT_CENTER)
+        .min_size(inner.size())
+        .desired_width(inner.width());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    // TextEdit is at least `interact_size` tall (32 pt in this app), which would push the text
+    // below the center of the 24 pt box.
+    child.spacing_mut().interact_size.y = inner.height();
+    let v = child.visuals_mut();
+    v.selection.bg_fill = selection;
+    v.text_cursor.stroke = Stroke::new(2.0, accent);
+    let resp = child.add(edit);
+    if resp.has_focus() {
+        let ring = Stroke::new(3.5, accent.gamma_multiply(0.5));
+        ui.painter().rect_stroke(rect, CornerRadius::same(7), ring, StrokeKind::Outside);
+    }
     resp
 }
 

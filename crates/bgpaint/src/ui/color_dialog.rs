@@ -10,7 +10,7 @@ use crate::app::PaintApp;
 use crate::theme::Theme;
 use bgpaint_core::color::Color;
 use bgpaint_core::history::Change;
-use egui::{Align2, Color32, Id, Rect, RichText, Sense, Stroke, pos2, vec2};
+use egui::{Color32, Id, Rect, RichText, Sense, Stroke, pos2, vec2};
 
 /// The 48 basic colors, in the order of Paint's dialog (12 × 4).
 pub const BASIC: [u32; 48] = [
@@ -153,17 +153,8 @@ impl PaintApp {
                         d.hex = d.color().to_hex_string();
                     }
                     ui.add_space(8.0);
-                    let (mr, mresp) = ui.allocate_exact_size(vec2(130.0, 32.0), Sense::click());
-                    widgets::paint_standard_button(ui, t, mr, &mresp, "", true);
-                    widgets::label(
-                        ui.painter(),
-                        pos2(mr.left() + 12.0, mr.center().y),
-                        Align2::LEFT_CENTER,
-                        if d.mode == Mode::Rgb { "RGB" } else { "HSV" },
-                        14.0,
-                        t.text,
-                    );
-                    widgets::paint_chevron(ui.painter(), pos2(mr.right() - 14.0, mr.center().y), t.text, 12.0);
+                    let mresp = widgets::combo_box(ui, t, if d.mode == Mode::Rgb { "RGB" } else { "HSV" }, 130.0);
+                    let mr = mresp.rect;
                     if mresp.clicked() {
                         d.mode_open = !d.mode_open;
                     }

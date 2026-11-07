@@ -7,7 +7,7 @@ use crate::app::PaintApp;
 use crate::commands::Command;
 use crate::platform::{self, Orientation, Paper, PrintSettings};
 use crate::theme::Theme;
-use egui::{Align2, Color32, Id, Rect, RichText, Sense, Stroke, pos2, vec2};
+use egui::{Color32, Id, Rect, RichText, Sense, Stroke, pos2, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PrintMode {
@@ -212,14 +212,11 @@ impl PaintApp {
 }
 
 fn combo(ui: &mut egui::Ui, t: &Theme, text: &str, width: f32, open: &mut Dropdown, which: Dropdown) -> Rect {
-    let (r, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
-    widgets::paint_standard_button(ui, t, r, &resp, "", true);
-    widgets::label(ui.painter(), pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, text, 14.0, t.text);
-    widgets::paint_chevron(ui.painter(), pos2(r.right() - 14.0, r.center().y), t.text, 12.0);
+    let resp = widgets::combo_box(ui, t, text, width);
     if resp.clicked() {
         *open = if *open == which { Dropdown::None } else { which };
     }
-    r
+    resp.rect
 }
 
 fn outside(ctx: &egui::Context, rects: &[Rect], anchor: Rect) -> bool {

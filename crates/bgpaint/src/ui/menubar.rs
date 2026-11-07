@@ -29,7 +29,8 @@ pub enum MenuKind {
     Canvas(egui::Pos2),
 }
 
-pub const MENUBAR_HEIGHT: f32 = 40.0;
+/// On macOS the row is also the title bar, so it is shorter and centered on the traffic lights.
+pub const MENUBAR_HEIGHT: f32 = if cfg!(target_os = "macos") { 32.0 } else { 40.0 };
 
 impl PaintApp {
     pub fn toggle_menu(&mut self, kind: MenuKind, anchor: Rect) {
@@ -49,6 +50,9 @@ impl PaintApp {
                 let r = ui.max_rect();
                 let cy = r.center().y;
                 let mut x = r.left() + 4.0;
+                if cfg!(target_os = "macos") {
+                    x = title_bar(ui, r);
+                }
                 // On macOS these menus live in the global menu bar (see `mac_menu`).
                 let in_window_menus: &[(MenuKind, &str)] = if cfg!(target_os = "macos") {
                     &[]
@@ -415,6 +419,23 @@ impl PaintApp {
             None => label.to_owned(),
         }
     }
+}
+
+/// Width the macOS traffic lights (close, minimize, zoom) take at the start of the row.
+const TRAFFIC_LIGHTS: f32 = 78.0;
+
+/// Makes the row behave as the macOS title bar: the empty parts drag the window and a double
+/// click zooms it. Must run before the row's widgets so they stay on top of it. Returns where the
+/// row's content starts, past the traffic lights (hidden in full screen).
+fn title_bar(ui: &mut egui::Ui, r: Rect) -> f32 {
+    let resp = ui.interact(r, Id::unique("title-bar"), Sense::click_and_drag());
+    let (fullscreen, maximized) = ui.ctx().input(|i| (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false)));
+    if resp.double_clicked() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    } else if resp.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    r.left() + if fullscreen { 8.0 } else { TRAFFIC_LIGHTS }
 }
 
 fn menu_height(entries: &[Entry<Command>]) -> f32 {

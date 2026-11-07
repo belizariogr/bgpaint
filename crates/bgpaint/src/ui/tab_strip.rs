@@ -12,6 +12,8 @@ use egui::{CornerRadius, FontId, Id, Rect, Sense, Stroke, pos2, vec2};
 const TAB_MIN: f32 = 96.0;
 const TAB_MAX: f32 = 220.0;
 const PLUS: f32 = 36.0;
+/// Gap above the tabs, inside the row.
+const TAB_TOP: f32 = if cfg!(target_os = "macos") { 3.0 } else { 6.0 };
 
 /// Draws the tabs inside `area` and returns the command a click produced.
 pub fn show(app: &mut PaintApp, ui: &mut egui::Ui, t: &Theme, area: Rect) -> Option<Command> {
@@ -43,7 +45,7 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui, t: &Theme, area: Rect) -> Opt
     app.ui.active_tab_span = None;
     for (i, tab) in tabs.iter().enumerate() {
         let x = area.left() + i as f32 * tab_w - scroll;
-        let rect = Rect::from_min_max(pos2(x, area.top() + 6.0), pos2(x + tab_w, area.bottom()));
+        let rect = Rect::from_min_max(pos2(x, area.top() + TAB_TOP), pos2(x + tab_w, area.bottom()));
         if rect.right() < clip.left() || rect.left() > clip.right() {
             continue;
         }
@@ -115,7 +117,7 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui, t: &Theme, area: Rect) -> Opt
 
     // New tab.
     let px = (area.left() + total - scroll).min(clip.right()) + 4.0;
-    let plus = Rect::from_min_size(pos2(px, area.center().y - 14.0 + 3.0), vec2(28.0, 28.0));
+    let plus = Rect::from_min_size(pos2(px, (area.top() + TAB_TOP + area.bottom()) / 2.0 - 14.0), vec2(28.0, 28.0));
     let tip = match shortcut_label(&ctx, &Command::New) {
         Some(s) => format!("{} ({s})", app.tr.new),
         None => app.tr.new.to_owned(),

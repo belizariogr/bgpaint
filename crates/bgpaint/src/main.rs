@@ -36,6 +36,12 @@ fn main() -> eframe::Result {
         .with_min_inner_size([720.0, 480.0])
         .with_maximized(settings.maximized)
         .with_drag_and_drop(true);
+    // On macOS the tab row doubles as the title bar: the content runs under a transparent title
+    // bar and the traffic lights sit at the start of the row (see `ui::menubar`).
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
+    }
     if let Some(icon) = icon {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
