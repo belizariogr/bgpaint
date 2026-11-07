@@ -10,6 +10,11 @@ use egui::{Color32, CornerRadius, FontId, Id, Margin, RichText, Stroke, vec2};
 pub enum Modal {
     ConfirmSave(Pending),
     Error(String),
+    ResizeSkew(super::image_dialogs::ResizeState),
+    Properties(super::image_dialogs::PropertiesState),
+    RotateCustom(super::image_dialogs::RotateState),
+    EditColors(super::color_dialog::ColorDialog),
+    Print(super::print_dialog::PrintDialog),
 }
 
 /// What the footer buttons of a dialog produced.
@@ -42,6 +47,7 @@ pub fn dialog(
         ui.set_width(width);
         egui::Frame::NONE.inner_margin(Margin { left: 24, right: 24, top: 22, bottom: 18 }).show(ui, |ui| {
             ui.set_width(width - 48.0);
+            ui.set_max_width(width - 48.0);
             ui.label(RichText::new(title).font(FontId::new(20.0, theme::semibold())).color(t.text));
             ui.add_space(10.0);
             body(ui);
@@ -117,6 +123,11 @@ impl PaintApp {
                     self.ui.modal = Some(Modal::Error(text));
                 }
             }
+            Modal::ResizeSkew(state) => self.resize_dialog(ctx, &t, state),
+            Modal::Properties(state) => self.properties_dialog(ctx, &t, state),
+            Modal::RotateCustom(state) => self.rotate_dialog(ctx, &t, state),
+            Modal::EditColors(state) => self.color_dialog(ctx, &t, state),
+            Modal::Print(state) => self.print_dialog(ctx, &t, state),
         }
     }
 }

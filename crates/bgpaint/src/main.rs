@@ -13,7 +13,7 @@ mod files;
 mod i18n;
 mod platform;
 mod settings;
-mod stubs;
+mod system;
 mod theme;
 mod tools;
 mod ui;

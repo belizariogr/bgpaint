@@ -154,7 +154,7 @@ impl PaintApp {
             Active::Resize(op) => {
                 let (dx, dy) = ((p.x - op.start.x).round() as i32, (p.y - op.start.y).round() as i32);
                 op.rect = op.handle.apply(self.doc.bounds(), dx, dy);
-                op.rect = clamp_area(op.rect);
+                op.rect = clamp_dragged(op.rect, op.handle);
             }
             Active::Pan { last, .. } => {
                 self.view.scroll(pos - *last);
@@ -191,7 +191,10 @@ impl PaintApp {
             }
             Active::Select(mut op) => {
                 self.select_pointer_up(&mut op, p, button);
-                self.active = Active::Select(op);
+                // A click that selected nothing leaves no operation behind.
+                if op.established() {
+                    self.active = Active::Select(op);
+                }
             }
             Active::Text(mut op) => {
                 self.text_pointer_up(&mut op, p);
@@ -277,6 +280,7 @@ impl PaintApp {
     /// Applies the current outline/fill/size/colors to the shape or text being edited.
     pub fn on_shape_style_changed(&mut self) {
         self.restyle_shape();
+        self.restyle_text();
     }
 
     /// Handles and frames of the operation in progress.
@@ -284,6 +288,7 @@ impl PaintApp {
         match &self.active {
             Active::Shape(op) => super::shape::paint_overlay(op, &self.view, painter, t),
             Active::Select(op) => super::select::paint_overlay(op, &self.view, painter, t),
+            Active::Text(op) => super::text::paint_overlay(op, &self.view, painter, t),
             _ => {}
         }
     }
@@ -299,4 +304,42 @@ pub fn clamp_area(mut r: PixelRect) -> PixelRect {
         r.y1 = r.y0 + (MAX_AREA / w.max(1)) as i32;
     }
     r
+}
+
+/// Limits a canvas rectangle resized by dragging `h`, shrinking only the edges being dragged.
+pub fn clamp_dragged(mut r: PixelRect, h: Handle) -> PixelRect {
+    use bgpaint_core::raster::{MAX_AREA, MAX_SIDE};
+    let (ax, ay) = h.anchor();
+    let max = MAX_SIDE as i32;
+    if r.x1 - r.x0 > max {
+        if ax == 0.0 { r.x0 = r.x1 - max } else { r.x1 = r.x0 + max }
+    }
+    if r.y1 - r.y0 > max {
+        if ay == 0.0 { r.y0 = r.y1 - max } else { r.y1 = r.y0 + max }
+    }
+    if r.area() > MAX_AREA {
+        if ay != 0.5 {
+            let hgt = (MAX_AREA / u64::from(r.width().max(1))) as i32;
+            if ay == 0.0 { r.y0 = r.y1 - hgt } else { r.y1 = r.y0 + hgt }
+        } else {
+            let w = (MAX_AREA / u64::from(r.height().max(1))) as i32;
+            if ax == 0.0 { r.x0 = r.x1 - w } else { r.x1 = r.x0 + w }
+        }
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragged_edges_are_clamped() {
+        let r = clamp_dragged(PixelRect::new(-40_000, 0, 100, 100), Handle::W);
+        assert_eq!((r.x1, r.width()), (100, bgpaint_core::raster::MAX_SIDE));
+        let r = clamp_dragged(PixelRect::new(0, 0, 30_000, 30_000), Handle::SE);
+        assert!(r.area() <= bgpaint_core::raster::MAX_AREA);
+        assert_eq!((r.x0, r.y0), (0, 0));
+        assert_eq!(Handle::SE.apply(PixelRect::new(0, 0, 10, 10), -20, 5), PixelRect::new(0, 0, 1, 15));
+    }
 }

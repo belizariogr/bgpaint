@@ -206,7 +206,8 @@ pub fn text_field(ui: &mut Ui, t: &Theme, value: &mut String, width: f32, id: Id
         .text_color(t.text)
         .align(egui::Align2::LEFT_CENTER)
         .desired_width(inner.width());
-    let resp = ui.put(inner, edit);
+    // A child ui keeps the parent's layout cursor where `allocate_exact_size` left it.
+    let resp = ui.new_child(egui::UiBuilder::new().max_rect(inner)).add(edit);
     let line = if resp.has_focus() { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, t.input_underline) };
     let y = rect.bottom() - line.width / 2.0;
     ui.painter().hline(rect.left() + 1.0..=rect.right() - 1.0, y, line);

@@ -18,6 +18,8 @@ pub struct Settings {
     pub recent_files: Vec<PathBuf>,
     /// The ten "custom colors" slots of the palette, as `#RRGGBB`.
     pub custom_colors: Vec<String>,
+    /// The 24 "custom colors" of the Edit colors dialog.
+    pub dialog_custom_colors: Vec<String>,
     pub show_rulers: bool,
     pub show_grid: bool,
     pub show_status_bar: bool,
@@ -33,6 +35,7 @@ impl Default for Settings {
             theme: ThemeMode::System,
             recent_files: Vec::new(),
             custom_colors: Vec::new(),
+            dialog_custom_colors: Vec::new(),
             show_rulers: false,
             show_grid: false,
             show_status_bar: true,

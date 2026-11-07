@@ -95,6 +95,8 @@ pub struct PaintApp {
     pub started: Instant,
     pub(crate) files: crate::files::Async,
     pub active: crate::tools::interaction::Active,
+    pub text_settings: crate::tools::text::TextSettings,
+    pub print_settings: crate::platform::PrintSettings,
     pub thumbs: crate::ui::layers::Thumbnails,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
@@ -131,11 +133,14 @@ impl PaintApp {
             started,
             files: crate::files::Async::default(),
             active: Default::default(),
+            text_settings: Default::default(),
+            print_settings: Default::default(),
             thumbs: Default::default(),
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(),
         };
         app.sync_theme(&cc.egui_ctx);
+        crate::tools::text::preload_fonts();
         if let Some(path) = open {
             app.open_path(&cc.egui_ctx, path);
         }
@@ -283,6 +288,7 @@ impl eframe::App for PaintApp {
         self.handle_close_request(&ctx);
         self.handle_dropped_files(&ctx);
         self.selection_keys(&ctx);
+        self.text_keyboard(&ctx);
         self.handle_shortcuts(&ctx);
 
         if self.ui.settings_open {

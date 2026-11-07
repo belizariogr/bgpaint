@@ -187,7 +187,7 @@ impl PaintApp {
             }
             Tool::Fill | Tool::Picker => CursorIcon::Crosshair,
             Tool::Shape => self.shape_cursor(pos).unwrap_or(CursorIcon::Crosshair),
-            Tool::Text => CursorIcon::Text,
+            Tool::Text => self.text_cursor(pos),
             Tool::Magnifier => CursorIcon::ZoomIn,
             Tool::Select => self.select_cursor(pos),
         };

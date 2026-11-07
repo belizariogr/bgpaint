@@ -39,6 +39,8 @@ pub enum DialogResult {
     Open(PathBuf),
     Import(PathBuf),
     SaveAs(PathBuf, SaveFormat, Option<Pending>),
+    /// A background job finished; show this message.
+    Toast(String),
 }
 
 pub struct Async {
@@ -89,6 +91,7 @@ impl PaintApp {
             match r {
                 DialogResult::Open(p) => self.open_path(ctx, p),
                 DialogResult::Import(p) => self.import_path(ctx, p),
+                DialogResult::Toast(text) => self.show_toast(text),
                 DialogResult::SaveAs(p, f, then) => {
                     if self.save_to(&p, f)
                         && let Some(then) = then
@@ -287,6 +290,18 @@ impl PaintApp {
         if let Some(path) = dropped.into_iter().next() {
             self.confirm_unsaved(Pending::OpenPath(path));
         }
+    }
+}
+
+impl PaintApp {
+    /// Runs `job` on a worker thread and shows its message when it finishes.
+    pub fn run_in_background(&self, ctx: &egui::Context, job: impl FnOnce() -> String + Send + 'static) {
+        let tx = self.files.tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(DialogResult::Toast(job()));
+            ctx.request_repaint();
+        });
     }
 }
 

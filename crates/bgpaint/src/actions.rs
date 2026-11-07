@@ -23,7 +23,7 @@ impl PaintApp {
             Command::SaveProject => self.save_as_dialog(ctx, Some(SaveFormat::Ora), None),
             Command::Print | Command::PageSetup | Command::PrintPreview => self.open_print(cmd),
             Command::Share => self.share(),
-            Command::SetWallpaper(mode) => self.set_wallpaper(mode),
+            Command::SetWallpaper(mode) => self.set_wallpaper(ctx, mode),
             Command::ImageProperties => self.open_properties(),
             Command::Exit => self.confirm_unsaved(Pending::Exit),
             Command::Undo => {

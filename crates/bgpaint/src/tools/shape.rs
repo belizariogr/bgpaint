@@ -55,6 +55,8 @@ enum Drag {
 pub struct ShapeOp {
     pub geom: Geom,
     pub paint: ShapePaint,
+    /// Drawn with the right button: outline uses Color 2 and fill Color 1.
+    swap: bool,
     drag: Option<Drag>,
     raster: Option<RasterShape>,
     canvas: (u32, u32),
@@ -146,10 +148,6 @@ impl PaintApp {
                     let close = points.len() > 2 && points.first().is_some_and(|f| f.distance(p) <= tol * 1.5);
                     let double = op.last_click.is_some_and(|(t, q)| t.elapsed().as_millis() < 450 && q.distance(p) <= tol * 2.0);
                     if close || double {
-                        if double && points.len() > 3 {
-                            // The first click of the double click added a vertex; drop it.
-                            points.pop();
-                        }
                         finish_polygon(op);
                         let d = op.update();
                         self.preview_dirty.add(d);
@@ -195,6 +193,7 @@ impl PaintApp {
         let mut op = ShapeOp {
             geom,
             paint: self.shape_paint(swap),
+            swap,
             drag: Some(Drag::Create { start: p }),
             raster: None,
             canvas: (self.doc.width(), self.doc.height()),
@@ -269,13 +268,14 @@ impl PaintApp {
                     return None;
                 }
             }
-            (Geom::Box { geom, .. }, Drag::Create { .. }) => {
-                if geom.rect.width() < 1.0 && geom.rect.height() < 1.0 {
-                    // A click without drag draws nothing.
-                    let d = op.bounds();
-                    op.raster = None;
-                    self.preview_dirty.add(d);
-                }
+            (Geom::Box { geom, .. }, Drag::Create { .. }) if geom.rect.width() < 1.0 && geom.rect.height() < 1.0 => {
+                // A click without a drag draws nothing.
+                self.preview_dirty.add(op.bounds());
+                return None;
+            }
+            (Geom::Line { a, b }, Drag::Create { .. }) if a.distance(*b) < 1.0 => {
+                self.preview_dirty.add(op.bounds());
+                return None;
             }
             _ => {}
         }
@@ -303,17 +303,13 @@ impl PaintApp {
 
     /// Applies new outline/fill/size/colors to the shape being edited.
     pub fn restyle_shape(&mut self) {
-        let paint = self.shape_paint(false);
+        let swap = match &self.active {
+            super::interaction::Active::Shape(op) => op.swap,
+            _ => return,
+        };
+        let paint = self.shape_paint(swap);
         if let super::interaction::Active::Shape(op) = &mut self.active {
-            // Keep a right-button color swap.
-            let swapped = op.paint.outline_color == self.colors.secondary
-                && op.paint.fill_color == self.colors.primary
-                && self.colors.primary != self.colors.secondary;
-            op.paint = ShapePaint {
-                outline_color: if swapped { paint.fill_color } else { paint.outline_color },
-                fill_color: if swapped { paint.outline_color } else { paint.fill_color },
-                ..paint
-            };
+            op.paint = paint;
             let d = op.update();
             self.preview_dirty.add(d);
         }
@@ -415,6 +411,7 @@ mod tests {
                 outline_color: Color::BLACK,
                 fill_color: Color::WHITE,
             },
+            swap: false,
             drag: None,
             raster: None,
             canvas: (100, 100),

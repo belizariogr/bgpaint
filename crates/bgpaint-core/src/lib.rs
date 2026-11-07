@@ -14,5 +14,7 @@ pub mod ora;
 pub mod raster;
 pub mod selection;
 pub mod shapes;
+pub mod text;
 
+pub use cosmic_text;
 pub use tiny_skia;

@@ -41,7 +41,7 @@ fn rotated_cursor(h: Handle, angle: f32) -> CursorIcon {
         Handle::NW | Handle::SE => 3,
     };
     let steps = ((angle.rem_euclid(180.0) + 22.5) / 45.0) as i32;
-    match (base + steps).rem_euclid(4) {
+    match (base - steps).rem_euclid(4) {
         0 => CursorIcon::ResizeHorizontal,
         1 => CursorIcon::ResizeNeSw,
         2 => CursorIcon::ResizeVertical,
