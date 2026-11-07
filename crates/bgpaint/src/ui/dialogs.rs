@@ -95,27 +95,37 @@ pub fn dialog(
 }
 
 /// The macOS button row: no footer band, buttons sized to their titles and right aligned with
-/// the default button last (`[Don't Save] [Cancel] [Save]`), as in AppKit dialogs.
+/// the default button last. With three buttons the secondary one discards changes and, as in
+/// AppKit's save alerts, sits alone on the left in red (`[Delete]      [Cancel] [Save]`).
 fn mac_footer(ui: &mut egui::Ui, t: &Theme, width: f32, buttons: (&str, Option<&str>, Option<&str>)) -> Footer {
     let mut result = Footer::None;
     let bw = |ui: &egui::Ui, text: &str| (widgets::text_width(ui, text, widgets::mac::font()) + 32.0).max(84.0);
     egui::Frame::NONE.inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 18 }).show(ui, |ui| {
         ui.set_width(width - 48.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            if widgets::accent_button(ui, t, buttons.0, bw(ui, buttons.0)).clicked() {
-                result = Footer::Primary;
-            }
-            if let Some(c) = buttons.2
-                && widgets::standard_button(ui, t, c, bw(ui, c)).clicked()
-            {
-                result = Footer::Cancel;
-            }
-            if let Some(s) = buttons.1
-                && widgets::standard_button(ui, t, s, bw(ui, s)).clicked()
+            let destructive = buttons.1.filter(|_| buttons.2.is_some());
+            if let Some(s) = destructive
+                && widgets::mac::destructive_button(ui, t, s, bw(ui, s)).clicked()
             {
                 result = Footer::Secondary;
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::accent_button(ui, t, buttons.0, bw(ui, buttons.0)).clicked() {
+                    result = Footer::Primary;
+                }
+                if let Some(c) = buttons.2
+                    && widgets::standard_button(ui, t, c, bw(ui, c)).clicked()
+                {
+                    result = Footer::Cancel;
+                }
+                if destructive.is_none()
+                    && let Some(s) = buttons.1
+                    && widgets::standard_button(ui, t, s, bw(ui, s)).clicked()
+                {
+                    result = Footer::Secondary;
+                }
+            });
         });
     });
     result
@@ -136,7 +146,8 @@ impl PaintApp {
         match modal {
             Modal::ConfirmSave(action) => {
                 let name = self.file.display_name(tr);
-                let r = dialog(ctx, &t, "confirm-save", tr.unsaved_title, 460.0, (tr.save, Some(tr.dont_save), Some(tr.cancel)), |ui| {
+                let discard = if cfg!(target_os = "macos") { tr.discard_document } else { tr.dont_save };
+                let r = dialog(ctx, &t, "confirm-save", tr.unsaved_title, 460.0, (tr.save, Some(discard), Some(tr.cancel)), |ui| {
                     ui.label(RichText::new(format!("{} {name}?", tr.unsaved_question)).size(14.0).color(t.text));
                     ui.add_space(8.0);
                 });

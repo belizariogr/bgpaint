@@ -206,6 +206,8 @@ strings! {
     unsaved_title: "Paint", "Paint";
     unsaved_question: "Do you want to save your changes to", "Deseja salvar as alterações em";
     dont_save: "Don't save", "Não salvar";
+    // The macOS name for "Don't save" (the red button of AppKit's save alerts).
+    discard_document: "Delete", "Apagar";
     error_title: "Something went wrong", "Algo deu errado";
     open_failed: "This file could not be opened.", "Não foi possível abrir este arquivo.";
     save_failed: "The image could not be saved.", "Não foi possível salvar a imagem.";
