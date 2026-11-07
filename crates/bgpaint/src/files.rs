@@ -47,6 +47,8 @@ pub enum DialogResult {
     SaveAs(u64, PathBuf, SaveFormat, Option<Pending>),
     /// A background job finished; show this message.
     Toast(String),
+    /// BGPaint was launched again with these files (see [`crate::single_instance`]).
+    Launched(Vec<PathBuf>),
 }
 
 pub struct Async {
@@ -61,8 +63,15 @@ pub struct Async {
 
 enum Queued {
     Open(PathBuf),
+    NewTab,
     Import(u64, PathBuf),
     SaveAs(u64, PathBuf, SaveFormat, Option<Pending>),
+}
+
+impl Async {
+    pub fn sender(&self) -> Sender<DialogResult> {
+        self.tx.clone()
+    }
 }
 
 impl Default for Async {
@@ -112,6 +121,14 @@ impl PaintApp {
                 DialogResult::Open(paths) => self.files.queue.extend(paths.into_iter().map(Queued::Open)),
                 DialogResult::Import(tab, p) => self.files.queue.push_back(Queued::Import(tab, p)),
                 DialogResult::Toast(text) => self.show_toast(text),
+                DialogResult::Launched(paths) => {
+                    if paths.is_empty() {
+                        self.files.queue.push_back(Queued::NewTab);
+                    }
+                    self.files.queue.extend(paths.into_iter().map(Queued::Open));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 DialogResult::SaveAs(tab, p, f, then) => self.files.queue.push_back(Queued::SaveAs(tab, p, f, then)),
             }
         }
@@ -120,6 +137,7 @@ impl PaintApp {
         {
             match q {
                 Queued::Open(p) => self.open_path(ctx, p),
+                Queued::NewTab => self.new_tab(),
                 Queued::Import(tab, p) => {
                     if let Some(i) = self.tab_index(tab) {
                         self.switch_tab(i);

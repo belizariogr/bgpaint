@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rasterizes the DMG art in crates/bgpaint/packaging/macos/ (background.svg,
 # volume-icon.svg) into the committed PNG/ICNS files. Run on macOS after editing
-# either SVG or the app icon (crates/bgpaint/assets/icon.svg); the release build only
+# either SVG or the app icon (crates/bgpaint/assets/icon.svg or icon-macos.svg); the release build only
 # uses the committed rasters, so CI needs neither rsvg-convert nor this script.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ trap 'rm -rf "$work"' EXIT
 # volume-icon.svg references the app icon by a sibling path: librsvg refuses
 # to load images from parent directories.
 cp "$assets/volume-icon.svg" "$assets/white-drive-tahoe.png" "$work/"
-cp "$root/crates/bgpaint/assets/icon.svg" "$work/"
+cp "$root/crates/bgpaint/assets/icon.svg" "$root/crates/bgpaint/assets/icon-macos.svg" "$work/"
 iconset="$work/volume-icon.iconset"
 mkdir "$iconset"
 for size in 16 32 128 256 512; do

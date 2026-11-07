@@ -3,14 +3,14 @@
   <!--
     Finder volume icon, as BGDesk's: White Drive (macOS Tahoe) by cheezton,
     https://macosicons.com/icon/white-drive-macos-tahoe-kfAbSZoEDB
-    with the BGPaint app icon (crates/bgpaint/assets/icon.svg, which
-    script/generate-macos-dmg-assets puts beside this file before rendering)
+    with the BGPaint macOS app icon (crates/bgpaint/assets/icon-macos.svg, which
+    script/generate-macos-dmg-assets puts beside this file, with icon.svg, before rendering)
     as a 300px badge (373px with the icon's transparent margin, which carries
     its own drop shadow) centered on the disk face at (512,491), like BGDesk's mark.
     The drive pixels stay in white-drive-tahoe.png so the disk is not traced
     from a thumbnail.
   -->
   <image href="white-drive-tahoe.png" xlink:href="white-drive-tahoe.png" width="1024" height="1024"/>
-  <image href="icon.svg" xlink:href="icon.svg"
+  <image href="icon-macos.svg" xlink:href="icon-macos.svg"
          x="325.5" y="304.5" width="373" height="373"/>
 </svg>

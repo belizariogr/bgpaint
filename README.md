@@ -94,7 +94,8 @@ Packages are written to `target/release/` (or `target/<triple>/release/` with
 distros whose libraries use `.relr.dyn` (e.g. Arch), the AppImage step needs
 `NO_STRIP=1`; release AppImages are built on Ubuntu 22.04 for wider glibc compatibility.
 
-The icon is drawn in `crates/bgpaint/assets/icon.svg`; after editing it, run
+The icon is drawn in `crates/bgpaint/assets/icon.svg` (`icon-macos.svg` adds the margin
+macOS icons have); after editing it, run
 `script/generate-app-icons` (PNGs, `.icns`, `.ico`) and
 `script/generate-macos-dmg-assets` (DMG background and volume icon).
 

@@ -129,6 +129,8 @@ pub struct PaintApp {
     /// Tab to go back to after closing a background tab.
     pub return_to_tab: Option<u64>,
     pub updater: crate::update::Updater,
+    /// Answers later launches of BGPaint (see [`crate::single_instance`]).
+    instance: Option<crate::single_instance::Socket>,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
     /// The global menu bar on macOS.
@@ -137,7 +139,13 @@ pub struct PaintApp {
 }
 
 impl PaintApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, open: Vec<std::path::PathBuf>, started: Instant) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        open: Vec<std::path::PathBuf>,
+        instance: Option<crate::single_instance::Listener>,
+        started: Instant,
+    ) -> Self {
         crate::theme::install_fonts(&cc.egui_ctx);
         let mut colors = Colors::default();
         for (slot, hex) in colors.custom.iter_mut().zip(&settings.custom_colors) {
@@ -177,6 +185,7 @@ impl PaintApp {
             exit_discarded: Default::default(),
             return_to_tab: None,
             updater: Default::default(),
+            instance: None,
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(),
             #[cfg(target_os = "macos")]
@@ -192,6 +201,7 @@ impl PaintApp {
         for path in open {
             app.open_path(&cc.egui_ctx, path);
         }
+        app.instance = instance.map(|l| l.serve(&cc.egui_ctx, app.files.sender()));
         if app.settings.check_updates && crate::update::automatic_checks_allowed() {
             app.updater.check(&cc.egui_ctx, false);
         }
@@ -390,6 +400,10 @@ impl eframe::App for PaintApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.settings.custom_colors = self.colors.custom.iter().map(|c| c.map(|c| c.to_hex_string()).unwrap_or_default()).collect();
         self.settings.save();
+        // Before relaunching, or the new version would hand its files back to this instance.
+        if let Some(socket) = self.instance.take() {
+            socket.release();
+        }
         if self.updater.relaunch {
             // The open files that are on disk come back in the new version.
             let files: Vec<std::path::PathBuf> = std::iter::once(&self.file.path)
