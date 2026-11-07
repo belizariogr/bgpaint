@@ -23,7 +23,7 @@ resvg = "0.49"
 cosmic-text = "0.19"
 roxmltree = "0.21"
 zip = { version = "9", default-features = false, features = ["deflate"] }
-eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "accesskit"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "accesskit", "clipboard"] }
 egui = "0.37"
 rfd = "0.17"
 arboard = { version = "3.7", features = ["wayland-data-control"] }

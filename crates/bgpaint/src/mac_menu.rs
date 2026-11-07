@@ -26,6 +26,9 @@ enum Dynamic {
     Enabled(MenuItem, fn(&PaintApp) -> bool),
     /// Checked when the predicate holds.
     Checked(CheckMenuItem, fn(&PaintApp) -> bool),
+    /// An Edit item that also works on a focused text field: enabled while one has focus, or
+    /// when the predicate holds.
+    Edit(MenuItem, fn(&PaintApp) -> bool),
 }
 
 pub struct NativeMenu {
@@ -128,6 +131,12 @@ impl Builder {
     fn item_when(&mut self, text: &str, command: Command, accelerator: Option<Accelerator>, when: fn(&PaintApp) -> bool) -> MenuItem {
         let item = self.item(text, command, accelerator);
         self.dynamic.push((Dynamic::Enabled(item.clone(), when), None));
+        item
+    }
+
+    fn edit_item(&mut self, text: &str, command: Command, accelerator: Option<Accelerator>, when: fn(&PaintApp) -> bool) -> MenuItem {
+        let item = self.item(text, command, accelerator);
+        self.dynamic.push((Dynamic::Edit(item.clone(), when), None));
         item
     }
 
@@ -236,15 +245,16 @@ impl NativeMenu {
             ],
         );
 
-        // Editing shortcuts (⌘Z, ⌘C, ⌘A…) are left to the window, so text fields and the
-        // text tool keep them.
-        let undo = b.item_when(tr.undo, Command::Undo, None, |a| a.history.can_undo() || !a.active.is_idle());
-        let redo = b.item_when(tr.redo, Command::Redo, None, |a| a.history.can_redo());
-        let cut = b.item_when(tr.cut, Command::Cut, None, has_sel);
-        let copy = b.item_when(tr.copy, Command::Copy, None, has_sel);
-        let paste = b.item(tr.paste, Command::Paste, None);
-        let copy_visible = b.item(tr.copy_visible_layers, Command::CopyVisible, None);
-        let select_all = b.item(tr.select_all, Command::SelectAll, None);
+        // The editing shortcuts (⌘Z, ⌘C, ⌘V, ⌘A…) belong to these items, which AppKit fires
+        // before the window sees the keys: while a text field or the text tool has focus, `update`
+        // hands them to the text instead (see `forward_to_text`).
+        let undo = b.edit_item(tr.undo, Command::Undo, cmd(Code::KeyZ), |a| a.history.can_undo() || !a.active.is_idle());
+        let redo = b.edit_item(tr.redo, Command::Redo, cmd_shift(Code::KeyZ), |a| a.history.can_redo());
+        let cut = b.edit_item(tr.cut, Command::Cut, cmd(Code::KeyX), has_sel);
+        let copy = b.edit_item(tr.copy, Command::Copy, cmd(Code::KeyC), has_sel);
+        let paste = b.edit_item(tr.paste, Command::Paste, cmd(Code::KeyV), |_| true);
+        let copy_visible = b.item(tr.copy_visible_layers, Command::CopyVisible, cmd_shift(Code::KeyC));
+        let select_all = b.edit_item(tr.select_all, Command::SelectAll, cmd(Code::KeyA), |_| true);
         let invert_sel = b.item_when(tr.invert_selection, Command::InvertSelection, None, has_sel);
         let delete = b.item_when(tr.delete, Command::DeleteSelection, None, |a| {
             a.has_selection() || matches!(a.active, crate::tools::interaction::Active::Shape(_))
@@ -255,7 +265,7 @@ impl NativeMenu {
             &[&undo, &redo, &sep(), &cut, &copy, &paste, &copy_visible, &sep(), &select_all, &invert_sel, &delete, &transparent],
         );
 
-        let crop = b.item_when(tr.crop, Command::Crop, None, has_sel);
+        let crop = b.item_when(tr.crop, Command::Crop, cmd_shift(Code::KeyX), has_sel);
         let resize = b.item(&format!("{}…", tr.resize_and_skew), Command::ResizeSkew, None);
         let rotate = [
             b.item(tr.rotate_right, Command::Rotate(QuarterTurn::Cw90), None),
@@ -346,12 +356,20 @@ impl NativeMenu {
 
     /// Runs the commands picked in the menu and brings item states up to date.
     pub fn update(&mut self, app: &mut PaintApp, ctx: &egui::Context) {
+        let text_focus = ctx.egui_wants_keyboard_input() || app.is_editing_text();
         while let Ok(e) = self.rx.try_recv() {
+            let action = self.actions.get(e.id());
+            if text_focus
+                && let Some(Action::Run(c)) = action
+                && forward_to_text(ctx, c)
+            {
+                continue;
+            }
             // A dialog is modal for the menu too.
             if app.ui.modal.is_some() {
                 continue;
             }
-            match self.actions.get(e.id()) {
+            match action {
                 Some(Action::Run(c)) => app.execute(ctx, c.clone()),
                 Some(Action::OpenUrl(url)) => crate::platform::open_url(url),
                 None => {}
@@ -360,11 +378,12 @@ impl NativeMenu {
         for (d, last) in &mut self.dynamic {
             let now = match d {
                 Dynamic::Enabled(_, f) | Dynamic::Checked(_, f) => f(app),
+                Dynamic::Edit(_, f) => text_focus || f(app),
             };
             if *last != Some(now) {
                 *last = Some(now);
                 match d {
-                    Dynamic::Enabled(item, _) => item.set_enabled(now),
+                    Dynamic::Enabled(item, _) | Dynamic::Edit(item, _) => item.set_enabled(now),
                     Dynamic::Checked(item, _) => item.set_checked(now),
                 }
             }
@@ -393,4 +412,27 @@ impl NativeMenu {
         }
         self.recent_shown = Some(settings.recent_files.clone());
     }
+}
+
+/// Hands an Edit command picked in the menu (or by its shortcut) to the focused text field or
+/// text box, as the key events it would have received. Returns false when the command is not a
+/// text one, or when there is no text to paste into the text tool (which then pastes an image).
+fn forward_to_text(ctx: &egui::Context, command: &Command) -> bool {
+    use egui::{Event, Key, Modifiers};
+    let cmd = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+    let key = |key, modifiers| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+    let event = match command {
+        Command::Undo => key(Key::Z, cmd),
+        Command::Redo => key(Key::Z, cmd | Modifiers::SHIFT),
+        Command::Cut => Event::Cut,
+        Command::Copy => Event::Copy,
+        Command::SelectAll => key(Key::A, cmd),
+        Command::Paste => match crate::clipboard::get_text().filter(|t| !t.is_empty()) {
+            Some(text) => Event::Paste(text.replace("\r\n", "\n")),
+            None => return ctx.egui_wants_keyboard_input(),
+        },
+        _ => return false,
+    };
+    ctx.input_mut(|i| i.events.push(event));
+    true
 }
