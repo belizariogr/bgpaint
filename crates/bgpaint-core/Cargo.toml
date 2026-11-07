@@ -1,0 +1,19 @@
+[package]
+name = "bgpaint-core"
+description = "Document model, raster engine and file formats for BGPaint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tiny-skia.workspace = true
+image.workspace = true
+resvg.workspace = true
+cosmic-text.workspace = true
+zip.workspace = true
+roxmltree.workspace = true

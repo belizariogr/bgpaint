@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4CC2FF"/>
+      <stop offset="1" stop-color="#0063B1"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FF5A5F"/>
+      <stop offset="0.35" stop-color="#FFC83D"/>
+      <stop offset="0.7" stop-color="#3DDC84"/>
+      <stop offset="1" stop-color="#7B61FF"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D9E6F2"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#bg)"/>
+  <rect x="40" y="44" width="176" height="150" rx="18" fill="#FFFFFF" opacity="0.96"/>
+  <path d="M62 160 C 92 100, 122 196, 152 132 S 196 102, 196 102" fill="none" stroke="url(#stroke)" stroke-width="22" stroke-linecap="round"/>
+  <g transform="rotate(40 176 150)">
+    <rect x="166" y="70" width="22" height="92" rx="11" fill="url(#handle)" stroke="#0B3A63" stroke-width="5"/>
+    <path d="M162 160 h30 l-4 34 q-11 16 -22 0 z" fill="#3A3A3A"/>
+  </g>
+</svg>
