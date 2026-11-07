@@ -11,13 +11,15 @@
 //! | `/usr`, `/usr/local` (`install-linux-system`) | same tarball           | root                  |
 //! | AppImage                                  | `.AppImage`                | only if not writable  |
 //! | `.deb`                                    | `.deb` (apt/dpkg)          | root                  |
+//! | `.rpm`                                    | `.rpm` (dnf/zypper/yum/rpm) | root                 |
+//! | pacman `.pkg.tar.zst`                     | `.pkg.tar.zst` (pacman)    | root                  |
 //! | macOS `BGPaint.app`                       | `.dmg` for the CPU         | only if not writable  |
 //!
 //! Installs that need no privileges are updated silently; the others ask first, then request
 //! the password through polkit (`pkexec`), falling back to `sudo` with a password typed into
 //! BGPaint when no polkit agent is running, or through the macOS administrator prompt.
-//! Copies owned by another package manager (pacman, rpm) or built from source only report
-//! the new version. The new version runs after BGPaint restarts.
+//! Copies owned by a package other than this project's `bgpaint` (an AUR build under another
+//! name, say) or built from source only report the new version. The new version runs after BGPaint restarts.
 
 use crate::platform::{data_dir, has, output};
 use serde::Deserialize;
@@ -164,6 +166,10 @@ pub enum Install {
     Prefix(PathBuf),
     /// Installed from the release's `.deb` (the binary's path).
     Deb(PathBuf),
+    /// Installed from the release's `.rpm` (the binary's path).
+    Rpm(PathBuf),
+    /// Installed from the release's pacman `.pkg.tar.zst` (the binary's path).
+    Pacman(PathBuf),
     /// Owned by another package manager, which has to update it.
     Managed(&'static str),
     /// Built from source, or a layout this module does not know.
@@ -207,6 +213,15 @@ fn succeeds(program: &str, args: &[&str]) -> bool {
     has(program) && output(program, args).is_some()
 }
 
+/// The package that owns a file, as `program args…` prints it (`None`: not owned, or no such
+/// package manager).
+fn owner(program: &str, args: &[&str]) -> Option<String> {
+    if !has(program) {
+        return None;
+    }
+    output(program, args).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+}
+
 /// The install of the running copy. Asks the package managers about system paths, so it
 /// runs on a worker thread.
 pub fn detect() -> Install {
@@ -223,10 +238,11 @@ pub fn detect() -> Install {
             let path = exe.to_string_lossy();
             if succeeds("dpkg-query", &["-S", &path]) {
                 Install::Deb(exe)
-            } else if succeeds("pacman", &["-Qqo", &path]) {
-                Install::Managed("pacman")
-            } else if succeeds("rpm", &["-qf", &path]) {
-                Install::Managed("rpm")
+            } else if let Some(owner) = owner("pacman", &["-Qqo", &path]) {
+                // Only this project's package is replaced by the release's.
+                if owner == "bgpaint" { Install::Pacman(exe) } else { Install::Managed("pacman") }
+            } else if let Some(owner) = owner("rpm", &["-qf", "--queryformat", "%{NAME}", &path]) {
+                if owner == "bgpaint" { Install::Rpm(exe) } else { Install::Managed("rpm") }
             } else {
                 Install::Prefix(prefix)
             }
@@ -247,6 +263,10 @@ fn asset_for<'a>(install: &Install, assets: &'a [Asset], arch: &str) -> Option<&
         Install::AppImage(_) => name.ends_with(&format!("_{arch}.AppImage")),
         Install::Bundle(_) | Install::Prefix(_) => name == format!("bgpaint-linux-{arch}.tar.gz"),
         Install::Deb(_) => name.starts_with("bgpaint_") && name.ends_with(&format!("_{deb_arch}.deb")),
+        // bgpaint-<version>-<release>.<arch>.rpm
+        Install::Rpm(_) => name.starts_with("bgpaint-") && name.ends_with(&format!(".{arch}.rpm")),
+        // bgpaint-<version>-<release>-<arch>.pkg.tar.zst
+        Install::Pacman(_) => name.starts_with("bgpaint-") && name.ends_with(&format!("-{arch}.pkg.tar.zst")),
         Install::Managed(_) | Install::Unsupported => false,
     };
     assets.iter().find(|a| wanted(&a.name))
@@ -267,7 +287,7 @@ fn writable(dir: &Path) -> bool {
 /// Whether installing over `install` needs root.
 fn needs_root(install: &Install) -> bool {
     match install {
-        Install::Prefix(_) | Install::Deb(_) => !is_root(),
+        Install::Prefix(_) | Install::Deb(_) | Install::Rpm(_) | Install::Pacman(_) => !is_root(),
         // The folder is renamed and later deleted, so its contents must be ours too.
         Install::MacApp(p) | Install::Bundle(p) => !(p.parent().is_some_and(writable) && writable(p)),
         Install::AppImage(p) => !p.parent().is_some_and(writable),
@@ -372,6 +392,8 @@ fn script_args(p: &Prepared) -> Option<Vec<String>> {
         Install::Bundle(app) => vec!["bundle".into(), package, s(app)],
         Install::Prefix(prefix) => vec!["prefix".into(), package, s(prefix)],
         Install::Deb(_) => vec!["deb".into(), package],
+        Install::Rpm(_) => vec!["rpm".into(), package],
+        Install::Pacman(_) => vec!["pacman".into(), package],
         Install::Managed(_) | Install::Unsupported => return None,
     })
 }
@@ -701,7 +723,7 @@ impl Updater {
             Install::AppImage(file) => Command::new(file),
             Install::Bundle(app) => Command::new(app.join("bin/bgpaint")),
             Install::Prefix(prefix) => Command::new(prefix.join("bin/bgpaint")),
-            Install::Deb(exe) => Command::new(exe),
+            Install::Deb(exe) | Install::Rpm(exe) | Install::Pacman(exe) => Command::new(exe),
             Install::Managed(_) | Install::Unsupported => return,
         };
         // Not this AppImage's environment for the new copy.
@@ -769,6 +791,9 @@ mod tests {
             "BGPaint_0.3.0_aarch64.dmg",
             "bgpaint_0.3.0_amd64.deb",
             "bgpaint_0.3.0_x86_64.AppImage",
+            "bgpaint_0.3.0_x86_64.tar.gz",
+            "bgpaint-0.3.0-1.x86_64.rpm",
+            "bgpaint-0.3.0-1-x86_64.pkg.tar.zst",
             "BGPaint_0.3.0_x86_64.dmg",
             "install.sh",
             "PKGBUILD",
@@ -784,7 +809,11 @@ mod tests {
         assert_eq!(pick(Install::Deb(any.clone()), "x86_64"), Some("bgpaint_0.3.0_amd64.deb"));
         assert_eq!(pick(Install::AppImage(any.clone()), "x86_64"), Some("bgpaint_0.3.0_x86_64.AppImage"));
         assert_eq!(pick(Install::MacApp(any.clone()), "aarch64"), Some("BGPaint_0.3.0_aarch64.dmg"));
-        assert_eq!(pick(Install::MacApp(any), "x86_64"), Some("BGPaint_0.3.0_x86_64.dmg"));
+        assert_eq!(pick(Install::MacApp(any.clone()), "x86_64"), Some("BGPaint_0.3.0_x86_64.dmg"));
+        assert_eq!(pick(Install::Rpm(any.clone()), "x86_64"), Some("bgpaint-0.3.0-1.x86_64.rpm"));
+        assert_eq!(pick(Install::Rpm(any.clone()), "aarch64"), None);
+        assert_eq!(pick(Install::Pacman(any.clone()), "x86_64"), Some("bgpaint-0.3.0-1-x86_64.pkg.tar.zst"));
+        assert_eq!(pick(Install::Pacman(any), "aarch64"), None);
         assert_eq!(pick(Install::Managed("pacman"), "x86_64"), None);
     }
 
