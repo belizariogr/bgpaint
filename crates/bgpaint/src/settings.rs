@@ -11,6 +11,23 @@ pub enum ThemeMode {
     System,
 }
 
+/// What the ribbon's Rotate button does: the last quarter turn picked from its menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RotateDefault {
+    #[default]
+    Right,
+    Left,
+    Half,
+}
+
+/// What the ribbon's Flip button does: the last flip picked from its menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FlipDefault {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -32,6 +49,8 @@ pub struct Settings {
     /// The interface language picked in Settings (a code from [`crate::i18n::LANGUAGES`]);
     /// `None` follows the system.
     pub language: Option<String>,
+    pub rotate_default: RotateDefault,
+    pub flip_default: FlipDefault,
 }
 
 impl Default for Settings {
@@ -50,6 +69,8 @@ impl Default for Settings {
             last_dir: None,
             check_updates: true,
             language: None,
+            rotate_default: RotateDefault::default(),
+            flip_default: FlipDefault::default(),
         }
     }
 }

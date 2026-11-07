@@ -145,6 +145,7 @@ impl PaintApp {
         if let Some(cmd) = out.action {
             self.ui.open_menu = None;
             menu::reset(ctx, id);
+            self.remember_ribbon_default(kind, &cmd);
             self.execute(ctx, cmd);
             return;
         }
