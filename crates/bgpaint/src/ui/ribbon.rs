@@ -314,7 +314,7 @@ impl PaintApp {
         let lr = Rect::from_center_size(at(1110.0, top + 42.0), vec2(40.0, 40.0));
         if IconButton::new(ic::LAYERS)
             .size(22.0)
-            .selected(self.ui.show_layers)
+            .selected(self.settings.show_layers)
             .tooltip(tr.layers)
             .show(ui, t, lr, Id::unique("rb-layers"))
             .clicked()

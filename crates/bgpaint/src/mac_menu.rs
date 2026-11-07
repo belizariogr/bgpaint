@@ -233,7 +233,7 @@ impl NativeMenu {
         let auto_hide = b.check(tr.auto_hide_toolbar, Command::SetAutoHideToolbar(true), |a| a.settings.auto_hide_toolbar);
         let always = b.check(tr.always_show_toolbar, Command::SetAutoHideToolbar(false), |a| !a.settings.auto_hide_toolbar);
         let thumbnail = b.check(tr.thumbnail, Command::ToggleThumbnail, |a| a.ui.thumbnail);
-        let layers = b.check(tr.layers, Command::ToggleLayersPanel, |a| a.ui.show_layers);
+        let layers = b.check(tr.layers, Command::ToggleLayersPanel, |a| a.settings.show_layers);
         let view_menu = submenu(
             tr.menu_view,
             &[

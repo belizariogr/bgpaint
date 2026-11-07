@@ -40,6 +40,8 @@ pub struct Settings {
     pub show_rulers: bool,
     pub show_grid: bool,
     pub show_status_bar: bool,
+    /// The Layers panel stays as the user last left it.
+    pub show_layers: bool,
     pub auto_hide_toolbar: bool,
     pub window_size: Option<(f32, f32)>,
     pub maximized: bool,
@@ -63,6 +65,7 @@ impl Default for Settings {
             show_rulers: false,
             show_grid: false,
             show_status_bar: true,
+            show_layers: false,
             auto_hide_toolbar: false,
             window_size: None,
             maximized: false,

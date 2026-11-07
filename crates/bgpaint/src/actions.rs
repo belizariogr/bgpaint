@@ -118,7 +118,10 @@ impl PaintApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.ui.fullscreen));
             }
             Command::ToggleThumbnail => self.ui.thumbnail = !self.ui.thumbnail,
-            Command::ToggleLayersPanel => self.ui.show_layers = !self.ui.show_layers,
+            Command::ToggleLayersPanel => {
+                self.settings.show_layers = !self.settings.show_layers;
+                self.settings.save();
+            }
             Command::OpenSettings => {
                 self.commit_interaction();
                 self.ui.open_menu = None;
