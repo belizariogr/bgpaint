@@ -1,6 +1,7 @@
 //! The central canvas area: image tiles, overlays, rulers, grid, scrollbars, the size/opacity panel
 //! and pointer input.
 
+mod cursors;
 pub mod tiles;
 pub mod view;
 
@@ -11,12 +12,15 @@ use crate::tools::{MAX_SIZE, Tool};
 use crate::ui::icons::regular as ic;
 use crate::ui::widgets;
 use bgpaint_core::geom::Point;
+use cursors::ToolCursor;
 use egui::{Align2, Color32, CursorIcon, Id, Rect, Sense, Stroke, Vec2, pos2, vec2};
 
 const RULER: f32 = 20.0;
 const SCROLLBAR: f32 = 12.0;
 /// Right edge of the floating size/opacity bar, measured from the left of the canvas area.
 const SIZE_BAR_RIGHT: f32 = 12.0 + 38.0;
+/// Smallest on-screen diameter of the brush/eraser outline cursor, in points.
+const MIN_OUTLINE: f32 = 6.0;
 
 impl PaintApp {
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui) {
@@ -179,22 +183,39 @@ impl PaintApp {
         let cursor = match self.tool {
             Tool::Pencil | Tool::Brush | Tool::Eraser => {
                 let s = self.tools.stroke(self.tool).map_or(1.0, |s| s.size) * self.view.scale();
-                if s >= 6.0 {
-                    let r = s / 2.0;
-                    if self.tool == Tool::Eraser {
+                // The outline always shows, even for tiny tips, so it never turns into a crosshair.
+                let big = s >= 6.0;
+                let s = s.max(MIN_OUTLINE);
+                let r = s / 2.0;
+                match self.tool {
+                    Tool::Eraser => {
                         let rect = Rect::from_center_size(pos, Vec2::splat(s));
                         painter.rect_stroke(rect, 0, Stroke::new(1.0, Color32::from_white_alpha(200)), egui::StrokeKind::Outside);
                         painter.rect_stroke(rect, 0, Stroke::new(1.0, Color32::from_black_alpha(200)), egui::StrokeKind::Inside);
-                    } else {
+                    }
+                    Tool::Brush => {
                         painter.circle_stroke(pos, r + 0.5, Stroke::new(1.0, Color32::from_white_alpha(200)));
                         painter.circle_stroke(pos, r - 0.5, Stroke::new(1.0, Color32::from_black_alpha(200)));
                     }
-                    CursorIcon::None
-                } else {
-                    CursorIcon::Crosshair
+                    _ => {
+                        // Pencil: the tip outline only when it is big enough to tell apart from the icon.
+                        if big {
+                            painter.circle_stroke(pos, r + 0.5, Stroke::new(1.0, Color32::from_white_alpha(200)));
+                            painter.circle_stroke(pos, r - 0.5, Stroke::new(1.0, Color32::from_black_alpha(200)));
+                        }
+                        cursors::paint(ctx, painter, pos, ToolCursor::Pencil, self.colors.primary);
+                    }
                 }
+                CursorIcon::None
             }
-            Tool::Fill | Tool::Picker => CursorIcon::Crosshair,
+            Tool::Fill => {
+                cursors::paint(ctx, painter, pos, ToolCursor::Fill, self.colors.primary);
+                CursorIcon::None
+            }
+            Tool::Picker => {
+                cursors::paint(ctx, painter, pos, ToolCursor::Picker, self.colors.primary);
+                CursorIcon::None
+            }
             Tool::Shape => self.shape_cursor(pos).unwrap_or(CursorIcon::Crosshair),
             Tool::Text => self.text_cursor(pos),
             Tool::Magnifier => CursorIcon::ZoomIn,
