@@ -5,7 +5,7 @@ use crate::app::PaintApp;
 use bgpaint_core::brush::{BlendMode, BrushKind, Stroke, apply_mask};
 use bgpaint_core::color::Color;
 use bgpaint_core::document::ActivePreview;
-use bgpaint_core::fill::flood_mask;
+use bgpaint_core::fill::Flood;
 use bgpaint_core::geom::{PixelRect, Point};
 use bgpaint_core::tiny_skia::Pixmap;
 
@@ -75,14 +75,8 @@ impl PaintApp {
     pub fn fill_at(&mut self, p: Point, secondary: bool) {
         let (x, y) = p.floor_i();
         let color = self.button_color(secondary);
-        let Some(mask) = flood_mask(&self.doc.active_layer().pixels, x, y, 0) else { return };
-        let bounds = mask.bounds();
-        let change = self.doc.edit_active(bounds, |layer| {
-            let full = PixelRect::from_size(layer.width(), layer.height());
-            // Fill replaces semi transparent pixels too: erase first, then paint.
-            apply_mask(layer, full, &mask, color, 1.0, BlendMode::Erase);
-            apply_mask(layer, full, &mask, color, 1.0, BlendMode::Over);
-        });
+        let Some(flood) = Flood::at(&self.doc.active_layer().pixels, x, y, 0) else { return };
+        let change = self.doc.edit_active(flood.bounds(), |layer| flood.paint(layer, color));
         self.history.push_one("fill", change);
     }
 
