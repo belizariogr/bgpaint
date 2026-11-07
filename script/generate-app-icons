@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Regenerates every derived app icon from crates/bgpaint/assets/icon.svg:
-# icon-{16..1024}.png, icon.ico (PNG frames 16-256) and icon.icns
-# (icp4/icp5/icp6/ic07-ic14). Needs rsvg-convert and python3; adds nothing to
+# icon-{16..1024}.png and icon.ico (PNG frames 16-256), where the tile fills the
+# canvas, and icon.icns (icp4/icp5/icp6/ic07-ic14) from icon-macos.svg, which adds
+# Apple's transparent margin. Needs rsvg-convert and python3; adds nothing to
 # the workspace build. Run script/generate-macos-dmg-assets afterwards (the DMG
 # volume icon carries the app icon).
 set -euo pipefail
@@ -12,12 +13,17 @@ command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (brew ins
 for size in 16 24 32 48 64 128 256 512 1024; do
   rsvg-convert --width "$size" --height "$size" --output "$dir/icon-$size.png" "$dir/icon.svg"
 done
+mac="$(mktemp -d)"
+trap 'rm -rf "$mac"' EXIT
+for size in 16 32 64 128 256 512 1024; do
+  rsvg-convert --width "$size" --height "$size" --output "$mac/icon-$size.png" "$dir/icon-macos.svg"
+done
 
-python3 -I - "$dir" <<'PY'
+python3 -I - "$dir" "$mac" <<'PY'
 import struct, sys
 from pathlib import Path
 
-d = Path(sys.argv[1])
+d, mac = Path(sys.argv[1]), Path(sys.argv[2])
 png = lambda size: (d / f"icon-{size}.png").read_bytes()
 
 # ICO: 6-byte header, 16-byte entries, then PNG frames (256 is stored as 0).
@@ -31,7 +37,8 @@ for size, data in zip(sizes, frames):
     offset += len(data)
 (d / "icon.ico").write_bytes(head + b"".join(frames))
 
-# ICNS: retina types reuse the doubled PNG.
+# ICNS (with the macOS margin): retina types reuse the doubled PNG.
+png = lambda size: (mac / f"icon-{size}.png").read_bytes()
 types = ((b"icp4", 16), (b"icp5", 32), (b"icp6", 64), (b"ic07", 128),
          (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024), (b"ic11", 32),
          (b"ic12", 64), (b"ic13", 256), (b"ic14", 512))

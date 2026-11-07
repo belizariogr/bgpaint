@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 256 256" width="256" height="256">
+  <!-- The macOS icon (icon.icns and the DMG volume badge): icon.svg with a transparent margin,
+       the tile being 824/1024 of the canvas as on Apple's icon grid, so it matches other apps'
+       size in the Dock and Finder, plus the drop shadow macOS icons carry. -->
+  <defs>
+    <filter id="tile-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <g transform="translate(128 128) scale(0.8046875) translate(-128 -128)">
+    <image href="icon.svg" xlink:href="icon.svg" width="256" height="256" filter="url(#tile-shadow)"/>
+  </g>
+</svg>
