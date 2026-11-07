@@ -81,6 +81,8 @@ pub enum Command {
     DuplicateLayer(usize),
     MergeDown(usize),
     MoveLayer(usize, bool),
+    /// Drag and drop in the Layers panel: moves layer `.0` to index `.1` (bottom = 0).
+    ReorderLayer(usize, usize),
     DeleteLayer(usize),
     ToggleLayerVisible(usize),
     SelectLayer(usize),

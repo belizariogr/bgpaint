@@ -318,17 +318,29 @@ impl Document {
 
     /// Moves a layer up (`up == true`) or down in the stack.
     pub fn move_layer(&mut self, index: usize, up: bool) -> bool {
-        let len = self.state.layers.len();
         let target = if up { index + 1 } else { index.wrapping_sub(1) };
-        if index >= len || target >= len {
+        self.move_layer_to(index, target)
+    }
+
+    /// Moves the layer at `from` so that it ends up at index `to` (bottom = 0); the layers in
+    /// between shift by one. The active layer stays the same layer.
+    pub fn move_layer_to(&mut self, from: usize, to: usize) -> bool {
+        let len = self.state.layers.len();
+        if from >= len || to >= len || from == to {
             return false;
         }
-        self.state.layers.swap(index, target);
-        if self.state.active == index {
-            self.state.active = target;
-        } else if self.state.active == target {
-            self.state.active = index;
-        }
+        let layer = self.state.layers.remove(from);
+        self.state.layers.insert(to, layer);
+        let a = self.state.active;
+        self.state.active = if a == from {
+            to
+        } else if from < a && a <= to {
+            a - 1
+        } else if to <= a && a < from {
+            a + 1
+        } else {
+            a
+        };
         self.invalidate_all();
         true
     }
@@ -444,6 +456,31 @@ mod tests {
         assert!(doc.delete_layer(1));
         assert!(!doc.delete_layer(0));
         assert_eq!(doc.active_index(), 0);
+    }
+
+    #[test]
+    fn move_layer_to_keeps_the_active_layer() {
+        let mut doc = Document::new(2, 2).unwrap();
+        doc.add_layer();
+        doc.add_layer();
+        doc.add_layer();
+        let names = |d: &Document| d.layers().iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&doc), ["1", "2", "3", "4"]);
+        doc.set_active(1);
+        // Top layer dropped at the bottom.
+        assert!(doc.move_layer_to(3, 0));
+        assert_eq!(names(&doc), ["4", "1", "2", "3"]);
+        assert_eq!(doc.active_layer().name, "2");
+        // The active layer itself, moved up.
+        assert!(doc.move_layer_to(2, 3));
+        assert_eq!(names(&doc), ["4", "1", "3", "2"]);
+        assert_eq!(doc.active_layer().name, "2");
+        doc.set_active(0);
+        assert!(doc.move_layer_to(1, 3));
+        assert_eq!(names(&doc), ["4", "3", "2", "1"]);
+        assert_eq!(doc.active_layer().name, "4");
+        assert!(!doc.move_layer_to(1, 1));
+        assert!(!doc.move_layer_to(0, 4));
     }
 
     #[test]

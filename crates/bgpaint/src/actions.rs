@@ -153,6 +153,7 @@ impl PaintApp {
                 let i = self.layer_index(i);
                 self.layer_op("move layer", |d| d.move_layer(i, up))
             }
+            Command::ReorderLayer(from, to) => self.layer_op("move layer", |d| d.move_layer_to(from, to)),
             Command::DeleteLayer(i) => {
                 let i = self.layer_index(i);
                 self.layer_op("delete layer", |d| d.delete_layer(i))

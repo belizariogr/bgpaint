@@ -123,6 +123,11 @@ pub struct Checker {
 
 impl Checker {
     pub fn paint(&mut self, ctx: &egui::Context, painter: &Painter, rect: Rect, colors: [Color32; 2]) {
+        self.paint_tinted(ctx, painter, rect, colors, Color32::WHITE);
+    }
+
+    /// Like [`Checker::paint`], multiplied by `tint` (e.g. to fade it out).
+    pub fn paint_tinted(&mut self, ctx: &egui::Context, painter: &Painter, rect: Rect, colors: [Color32; 2], tint: Color32) {
         if self.texture.as_ref().is_none_or(|(_, c)| *c != colors) {
             let img = ColorImage::new([2, 2], vec![colors[0], colors[1], colors[1], colors[0]]);
             let opts = TextureOptions { wrap_mode: egui::TextureWrapMode::Repeat, ..TextureOptions::NEAREST };
@@ -131,7 +136,7 @@ impl Checker {
         if let Some((tex, _)) = &self.texture {
             // Each texel covers 8×8 points.
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(rect.width() / 16.0, rect.height() / 16.0));
-            painter.image(tex.id(), rect, uv, Color32::WHITE);
+            painter.image(tex.id(), rect, uv, tint);
         }
     }
 }
