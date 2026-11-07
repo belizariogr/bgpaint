@@ -224,6 +224,7 @@ pub static STRINGS: Strings = Strings {
     share_failed: "Could not share the image",
     // Settings page
     app_theme: "App theme",
+    language: "Language",
     theme_light: "Light",
     theme_dark: "Dark",
     theme_system: "Use system setting",

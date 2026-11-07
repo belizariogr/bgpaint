@@ -2,8 +2,9 @@
 //!
 //! To add a language, copy `en.rs` to a new file, translate every string (the compiler refuses a
 //! file with a missing or misspelled key), declare the module below and map its language code
-//! in [`supported`]. The language is chosen from the system languages (European Portuguese uses
-//! the Brazilian strings; anything the app doesn't speak falls back to English).
+//! in [`supported`] and [`LANGUAGES`]. Unless the user picks one in Settings, the language is
+//! chosen from the system languages (European Portuguese uses the Brazilian strings; anything the
+//! app doesn't speak falls back to English).
 
 mod en;
 mod es;
@@ -236,6 +237,7 @@ pub struct Strings {
     pub share_failed: &'static str,
     // Settings page
     pub app_theme: &'static str,
+    pub language: &'static str,
     pub theme_light: &'static str,
     pub theme_dark: &'static str,
     pub theme_system: &'static str,
@@ -311,6 +313,16 @@ pub fn mac_strings(tr: &'static Strings) -> &'static MacStrings {
     }
 }
 
+/// The languages offered in Settings: the code saved in the settings file and the language's own
+/// name, which is shown untranslated.
+pub const LANGUAGES: [(&str, &str); 3] = [("en", "English"), ("pt-BR", "Português (Brasil)"), ("es", "Español")];
+
+/// The strings for the language picked in Settings (a code from [`LANGUAGES`]), or the system's
+/// when none is picked or the code is unknown.
+pub fn resolve(language: Option<&str>) -> &'static Strings {
+    language.and_then(supported).unwrap_or_else(detect)
+}
+
 /// Chooses the strings from the system's preferred languages: the first one the app speaks wins,
 /// and English is used when none is (or when the system does not say).
 pub fn detect() -> &'static Strings {
@@ -349,5 +361,15 @@ mod tests {
         assert_eq!(from_code("fr-FR").new, "New");
         assert_eq!(from_code("C").new, "New");
         assert_eq!(from_code("").new, "New");
+    }
+
+    #[test]
+    fn every_offered_language_resolves_to_itself() {
+        for (code, _) in LANGUAGES {
+            assert!(supported(code).is_some(), "{code}");
+        }
+        assert_eq!(resolve(Some("pt-BR")).new, "Novo");
+        assert_eq!(resolve(Some("es")).new, "Nuevo");
+        assert_eq!(resolve(Some("en")).new, "New");
     }
 }
