@@ -29,6 +29,18 @@ pollster.workspace = true
 # The global menu bar.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
+# Where AppKit puts the traffic lights (see src/mac_titlebar.rs); the versions muda already uses.
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSButton",
+    "NSControl",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
 # Only to turn off winit's default menu (same version as eframe uses).
 winit = { version = "0.30.13", default-features = false }
 

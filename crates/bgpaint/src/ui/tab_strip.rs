@@ -117,7 +117,8 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui, t: &Theme, area: Rect) -> Opt
 
     // New tab.
     let px = (area.left() + total - scroll).min(clip.right()) + 4.0;
-    let plus = Rect::from_min_size(pos2(px, (area.top() + TAB_TOP + area.bottom()) / 2.0 - 14.0), vec2(28.0, 28.0));
+    let side = (area.height() - TAB_TOP).min(28.0);
+    let plus = Rect::from_min_size(pos2(px, (area.top() + TAB_TOP + area.bottom() - side) / 2.0), vec2(side, side));
     let tip = match shortcut_label(&ctx, &Command::New) {
         Some(s) => format!("{} ({s})", app.tr.new),
         None => app.tr.new.to_owned(),
