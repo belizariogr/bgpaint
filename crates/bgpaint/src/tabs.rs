@@ -17,6 +17,7 @@ use std::path::Path;
 
 /// A document that is not the active one.
 pub struct DocTab {
+    pub id: u64,
     pub doc: Document,
     pub history: History,
     pub file: FileState,
@@ -38,6 +39,7 @@ impl DocTab {
 
 /// What the tab strip needs to draw one tab.
 pub struct TabInfo {
+    pub id: u64,
     pub name: String,
     pub modified: bool,
     pub path: Option<std::path::PathBuf>,
@@ -50,25 +52,38 @@ impl PaintApp {
 
     /// Name, modified flag and path of every tab, in strip order.
     pub fn tab_infos(&self) -> Vec<TabInfo> {
-        let mut v: Vec<TabInfo> =
-            self.tabs.iter().map(|t| TabInfo { name: t.name(self.tr), modified: t.modified(), path: t.file.path.clone() }).collect();
-        let current = TabInfo { name: self.file.display_name(self.tr), modified: self.modified(), path: self.file.path.clone() };
+        let mut v: Vec<TabInfo> = self
+            .tabs
+            .iter()
+            .map(|t| TabInfo { id: t.id, name: t.name(self.tr), modified: t.modified(), path: t.file.path.clone() })
+            .collect();
+        let current =
+            TabInfo { id: self.tab_id, name: self.file.display_name(self.tr), modified: self.modified(), path: self.file.path.clone() };
         v.insert(self.current_tab, current);
         v
     }
 
-    fn any_parked_modified(&self) -> Option<usize> {
-        let p = self.tabs.iter().position(DocTab::modified)?;
-        Some(if p < self.current_tab { p } else { p + 1 })
+    /// Strip position of a parked tab given its index in `tabs`.
+    fn strip_pos(&self, parked: usize) -> usize {
+        if parked < self.current_tab { parked } else { parked + 1 }
+    }
+
+    /// Strip position of the tab with this id.
+    pub fn tab_index(&self, id: u64) -> Option<usize> {
+        if id == self.tab_id {
+            return Some(self.current_tab);
+        }
+        self.tabs.iter().position(|t| t.id == id).map(|p| self.strip_pos(p))
     }
 
     pub fn any_modified(&self) -> bool {
-        self.modified() || self.any_parked_modified().is_some()
+        self.modified() || self.tabs.iter().any(DocTab::modified)
     }
 
     fn take_current(&mut self) -> DocTab {
         let placeholder = Document::new(1, 1).expect("1x1 is a valid size");
         DocTab {
+            id: self.tab_id,
             doc: std::mem::replace(&mut self.doc, placeholder),
             history: std::mem::take(&mut self.history),
             file: std::mem::take(&mut self.file),
@@ -80,6 +95,7 @@ impl PaintApp {
     }
 
     fn load(&mut self, t: DocTab) {
+        self.tab_id = t.id;
         self.doc = t.doc;
         self.history = t.history;
         self.file = t.file;
@@ -124,7 +140,18 @@ impl PaintApp {
             return Some(self.current_tab);
         }
         let p = self.tabs.iter().position(|t| same(&t.file.path))?;
-        Some(if p < self.current_tab { p } else { p + 1 })
+        Some(self.strip_pos(p))
+    }
+
+    /// After the active document was saved over `path`, another tab showing that file no longer
+    /// matches it: it becomes an untitled document with unsaved changes.
+    pub fn detach_other_tabs_from(&mut self, path: &Path) {
+        for t in self.tabs.iter_mut().filter(|t| t.file.path.as_deref() == Some(path)) {
+            t.file.path = None;
+            t.file.format = None;
+            t.file.disk_size = None;
+            t.file.saved_state = u64::MAX;
+        }
     }
 
     /// An untouched, never saved document (the blank canvas at startup) that a newly opened file
@@ -139,17 +166,14 @@ impl PaintApp {
         let current = self.take_current();
         self.tabs.insert(self.current_tab, current);
         self.current_tab = self.tabs.len();
+        self.tab_id = self.next_tab_id;
+        self.next_tab_id += 1;
         self.set_document(doc);
         self.file = FileState { saved_state: self.history.state_id(), ..file };
     }
 
-    /// Shows an opened file: switches to its tab when already open, reuses a pristine blank
-    /// document, or adds a tab.
+    /// Shows an opened file: reuses a pristine blank document or adds a tab.
     pub fn show_document(&mut self, doc: Document, file: FileState) {
-        if let Some(i) = file.path.as_deref().and_then(|p| self.tab_with_path(p)) {
-            self.switch_tab(i);
-            return;
-        }
         if self.current_is_pristine() {
             self.set_document(doc);
             self.file = FileState { saved_state: self.history.state_id(), ..file };
@@ -171,6 +195,7 @@ impl PaintApp {
 
     /// Closes tab `i`, asking to save it first when it has changes.
     pub fn close_tab(&mut self, i: usize) {
+        self.return_to_tab = (i != self.current_tab).then_some(self.tab_id);
         self.switch_tab(i);
         self.confirm_unsaved(Pending::CloseTab);
     }
@@ -187,17 +212,30 @@ impl PaintApp {
         let t = self.tabs.remove(next);
         self.load(t);
         self.current_tab = next;
+        if let Some(i) = self.return_to_tab.take().and_then(|id| self.tab_index(id)) {
+            self.switch_tab(i);
+        }
+    }
+
+    /// Starts closing the window: every tab with changes is asked about in turn.
+    pub fn begin_exit(&mut self) {
+        self.exit_discarded.clear();
+        self.request_exit();
+    }
+
+    fn needs_saving(&self, id: u64, modified: bool) -> bool {
+        modified && !self.exit_discarded.contains(&id)
     }
 
     /// Asks about every tab with unsaved changes in turn, then closes the window.
     pub fn request_exit(&mut self) {
         self.commit_interaction();
-        if !self.modified()
-            && let Some(i) = self.any_parked_modified()
+        if !self.needs_saving(self.tab_id, self.modified())
+            && let Some(p) = self.tabs.iter().position(|t| self.needs_saving(t.id, t.modified()))
         {
-            self.switch_tab(i);
+            self.switch_tab(self.strip_pos(p));
         }
-        if self.modified() {
+        if self.needs_saving(self.tab_id, self.modified()) {
             self.ui.modal = Some(crate::ui::dialogs::Modal::ConfirmSave(Pending::Exit));
         } else {
             self.allow_close = true;

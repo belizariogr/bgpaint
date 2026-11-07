@@ -49,9 +49,9 @@ pub fn show(app: &mut PaintApp, ui: &mut egui::Ui, t: &Theme, area: Rect) -> Opt
         }
         let visible = rect.intersect(clip);
         let selected = i == app.current_tab;
-        let resp = ui.interact(visible, Id::unique(("tab", i)), Sense::click_and_drag());
+        let resp = ui.interact(visible, Id::unique(("tab", tab.id)), Sense::click_and_drag());
         let close = Rect::from_center_size(pos2(rect.right() - 18.0, rect.center().y), vec2(24.0, 24.0));
-        let close_resp = ui.interact(close.intersect(clip), Id::unique(("tab-close", i)), Sense::click());
+        let close_resp = ui.interact(close.intersect(clip), Id::unique(("tab-close", tab.id)), Sense::click());
         let hovered = resp.hovered() || close_resp.hovered();
 
         if selected {

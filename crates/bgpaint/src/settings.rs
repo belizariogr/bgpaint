@@ -22,6 +22,8 @@ pub struct Settings {
     pub dialog_custom_colors: Vec<String>,
     pub show_rulers: bool,
     pub show_grid: bool,
+    /// Show transparent areas as a checkerboard (otherwise as plain white).
+    pub show_checkerboard: bool,
     pub show_status_bar: bool,
     pub auto_hide_toolbar: bool,
     pub window_size: Option<(f32, f32)>,
@@ -38,6 +40,7 @@ impl Default for Settings {
             dialog_custom_colors: Vec::new(),
             show_rulers: false,
             show_grid: false,
+            show_checkerboard: true,
             show_status_bar: true,
             auto_hide_toolbar: false,
             window_size: None,

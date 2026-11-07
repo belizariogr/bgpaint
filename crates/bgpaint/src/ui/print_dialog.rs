@@ -26,6 +26,8 @@ pub struct PrintDialog {
     mode: PrintMode,
     settings: PrintSettings,
     printers: Vec<String>,
+    /// The printer list, being read from CUPS on a worker thread (lpstat may be slow).
+    printers_rx: Option<std::sync::mpsc::Receiver<(Vec<String>, Option<String>)>>,
     copies: i64,
     margin: i64,
     open: Dropdown,
@@ -35,18 +37,19 @@ pub struct PrintDialog {
 impl PaintApp {
     pub fn open_print(&mut self, cmd: Command) {
         self.commit_interaction();
-        let (printers, default) = platform::printers();
-        let mut settings = self.print_settings.clone();
-        if settings.printer.as_ref().is_none_or(|p| !printers.contains(p)) {
-            settings.printer = default.or_else(|| printers.first().cloned());
-        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(platform::printers());
+        });
+        let settings = self.print_settings.clone();
         let mode = if cmd == Command::PageSetup { PrintMode::PageSetup } else { PrintMode::Print };
         let copies = i64::from(settings.copies);
         let margin = settings.margin_mm.round() as i64;
         self.ui.modal = Some(Modal::Print(PrintDialog {
             mode,
             settings,
-            printers,
+            printers: Vec::new(),
+            printers_rx: Some(rx),
             copies,
             margin,
             open: Dropdown::None,
@@ -56,6 +59,19 @@ impl PaintApp {
 
     pub fn print_dialog(&mut self, ctx: &egui::Context, t: &Theme, mut d: PrintDialog) {
         let tr = self.tr;
+        if let Some(rx) = &d.printers_rx {
+            match rx.try_recv() {
+                Ok((printers, default)) => {
+                    if d.settings.printer.as_ref().is_none_or(|p| !printers.contains(p)) {
+                        d.settings.printer = default.or_else(|| printers.first().cloned());
+                    }
+                    d.printers = printers;
+                    d.printers_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(50)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => d.printers_rx = None,
+            }
+        }
         let title = if d.mode == PrintMode::PageSetup { tr.page_setup } else { tr.print };
         let primary = if d.mode == PrintMode::PageSetup { tr.ok } else { tr.print };
         let (iw, ih) = (self.doc.width() as f32, self.doc.height() as f32);
@@ -90,7 +106,11 @@ impl PaintApp {
                     };
                     if d.mode == PrintMode::Print {
                         label(ui, tr.printer);
-                        let name = d.settings.printer.clone().unwrap_or_else(|| tr.no_printers.to_owned());
+                        let name = match (&d.settings.printer, &d.printers_rx) {
+                            (Some(p), _) => p.clone(),
+                            (None, Some(_)) => "…".to_owned(),
+                            (None, None) => tr.no_printers.to_owned(),
+                        };
                         d.anchors.0 = combo(ui, t, &name, 330.0, &mut d.open, Dropdown::Printer);
                         ui.add_space(8.0);
                         label(ui, tr.copies);
@@ -182,9 +202,11 @@ impl PaintApp {
             }
         };
         let (ok, failed) = (self.tr.print_sent, self.tr.print_failed);
-        self.run_in_background(ctx, move || match platform::print_png(&png, &settings) {
-            Ok(()) => ok.to_owned(),
-            Err(e) => format!("{failed}: {e}"),
+        self.run_in_background(ctx, move || {
+            Some(match platform::print_png(&png, &settings) {
+                Ok(()) => ok.to_owned(),
+                Err(e) => format!("{failed}: {e}"),
+            })
         });
     }
 }

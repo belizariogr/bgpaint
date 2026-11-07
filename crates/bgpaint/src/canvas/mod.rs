@@ -49,9 +49,7 @@ impl PaintApp {
             let canvas = self.view.canvas_rect();
             // Soft shadow under the canvas.
             painter.add(egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: t.canvas_shadow }.as_shape(canvas, 0));
-            if !self.doc.background().visible {
-                self.checker.paint(&ctx, &painter, canvas, [t.checker_a, t.checker_b]);
-            }
+            self.paint_transparency(&ctx, &painter, canvas, &t);
             self.tiles.paint(&painter, canvas.min, self.view.scale(), ppp);
             if self.settings.show_grid {
                 self.paint_grid(&painter, &t, viewport);
@@ -124,6 +122,19 @@ impl PaintApp {
             if !viewport.contains(p) {
                 self.view.ensure_visible(self.view.to_canvas(p));
             }
+        }
+    }
+
+    /// What shows through transparent pixels (only when the background is hidden): a
+    /// checkerboard, or plain white when the user turned it off.
+    fn paint_transparency(&mut self, ctx: &egui::Context, painter: &egui::Painter, rect: Rect, t: &Theme) {
+        if self.doc.background().visible {
+            return;
+        }
+        if self.settings.show_checkerboard {
+            self.checker.paint(ctx, painter, rect, [t.checker_a, t.checker_b]);
+        } else {
+            painter.rect_filled(rect, 0, Color32::WHITE);
         }
     }
 
@@ -380,9 +391,7 @@ impl PaintApp {
             .show(ctx, |ui| {
                 widgets::panel_frame(t).show(ui, |ui| {
                     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
-                    if !self.doc.background().visible {
-                        self.checker.paint(ctx, ui.painter(), rect, [t.checker_a, t.checker_b]);
-                    }
+                    self.paint_transparency(ctx, ui.painter(), rect, t);
                     let ppp = ctx.pixels_per_point();
                     self.tiles.paint(&ui.painter_at(rect), rect.min, s, ppp);
                     // Visible area.

@@ -125,7 +125,18 @@ pub fn print_png(png: &[u8], s: &PrintSettings) -> Result<(), String> {
     if !has("lp") {
         return Err("lp (CUPS) is not installed".into());
     }
-    let file = data_dir().join("print-job.png");
+    // A file per job, so a quick second print does not overwrite one CUPS may still be reading;
+    // jobs older than an hour are cleaned up.
+    let dir = data_dir();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let old =
+            |e: &std::fs::DirEntry| e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|d| d.as_secs() > 3600));
+        for e in entries.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("print-job-") && old(e)) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let file = dir.join(format!("print-job-{stamp}.png"));
     std::fs::write(&file, png).map_err(|e| e.to_string())?;
     let args = lp_args(s, &file);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -149,6 +160,19 @@ pub fn share_file(file: &Path) -> bool {
 
 // ----- Desktop background -----
 
+/// A `file://` URI with the path percent-encoded (spaces, non-ASCII characters…).
+fn file_uri(path: &str) -> String {
+    let mut uri = String::from("file://");
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri
+}
+
 /// Sets the desktop background on the current desktop environment.
 pub fn set_wallpaper(file: &Path, mode: WallpaperMode) -> bool {
     let path = file.display().to_string();
@@ -160,7 +184,7 @@ pub fn set_wallpaper(file: &Path, mode: WallpaperMode) -> bool {
         return run("osascript", &["-e", &script]);
     }
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
-    let uri = format!("file://{path}");
+    let uri = file_uri(&path);
     if desktop.contains("kde") && has("plasma-apply-wallpaperimage") {
         let fill = match mode {
             WallpaperMode::Fill => "preserveAspectCrop",
@@ -192,6 +216,8 @@ pub fn set_wallpaper(file: &Path, mode: WallpaperMode) -> bool {
             && run("hyprctl", &["hyprpaper", "preload", &path])
             && run("hyprctl", &["hyprpaper", "wallpaper", &format!(",{path}")])
         {
+            // Free the images of earlier wallpapers.
+            run("hyprctl", &["hyprpaper", "unload", "unused"]);
             return true;
         }
         if has("swaybg") {
@@ -256,6 +282,11 @@ mod tests {
         assert!(joined.starts_with("-d Office -n 2 -o media=A4 -o landscape -o fit-to-page -o position=center"));
         assert!(joined.contains("page-left=54"));
         assert!(joined.ends_with("/tmp/x.png"));
+    }
+
+    #[test]
+    fn file_uris_are_encoded() {
+        assert_eq!(file_uri("/home/a b/ç.png"), "file:///home/a%20b/%C3%A7.png");
     }
 
     #[test]

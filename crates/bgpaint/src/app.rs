@@ -120,6 +120,13 @@ pub struct PaintApp {
     pub tabs: Vec<crate::tabs::DocTab>,
     /// Position of the active document in the tab strip.
     pub current_tab: usize,
+    /// Stable id of the active document (ids survive reordering and closing other tabs).
+    pub tab_id: u64,
+    pub next_tab_id: u64,
+    /// Tabs whose changes the user chose to discard during the current exit.
+    pub exit_discarded: std::collections::HashSet<u64>,
+    /// Tab to go back to after closing a background tab.
+    pub return_to_tab: Option<u64>,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
 }
@@ -160,6 +167,10 @@ impl PaintApp {
             thumbs: Default::default(),
             tabs: Vec::new(),
             current_tab: 0,
+            tab_id: 0,
+            next_tab_id: 1,
+            exit_discarded: Default::default(),
+            return_to_tab: None,
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(),
         };
@@ -245,7 +256,7 @@ impl PaintApp {
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             if self.any_modified() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.confirm_unsaved(crate::files::Pending::Exit);
+                self.begin_exit();
             } else {
                 self.allow_close = true;
             }
@@ -308,9 +319,9 @@ impl eframe::App for PaintApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx);
+        self.handle_dropped_files(&ctx);
         self.poll_async(&ctx);
         self.handle_close_request(&ctx);
-        self.handle_dropped_files(&ctx);
         self.selection_keys(&ctx);
         self.text_keyboard(&ctx);
         self.handle_shortcuts(&ctx);

@@ -35,8 +35,10 @@ pub enum Pending {
 /// Results of dialogs running on a background thread.
 pub enum DialogResult {
     Open(Vec<PathBuf>),
-    Import(PathBuf),
-    SaveAs(PathBuf, SaveFormat, Option<Pending>),
+    /// Import into the tab with this id.
+    Import(u64, PathBuf),
+    /// Save the tab with this id, then run the action.
+    SaveAs(u64, PathBuf, SaveFormat, Option<Pending>),
     /// A background job finished; show this message.
     Toast(String),
 }
@@ -46,21 +48,28 @@ pub struct Async {
     rx: Receiver<DialogResult>,
     /// A dialog is currently shown (avoid opening two).
     pub busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// An action to run at the start of the next frame.
-    pub deferred: Option<Pending>,
+    /// Files to open or import, held back while a dialog is shown so they do not change the
+    /// document under it.
+    queue: std::collections::VecDeque<Queued>,
+}
+
+enum Queued {
+    Open(PathBuf),
+    Import(u64, PathBuf),
 }
 
 impl Default for Async {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Self { tx, rx, busy: Default::default(), deferred: None }
+        Self { tx, rx, busy: Default::default(), queue: Default::default() }
     }
 }
 
-fn spawn_dialog(app: &PaintApp, ctx: &egui::Context, job: impl FnOnce() -> Option<DialogResult> + Send + 'static) {
+/// Runs a file dialog on a worker thread. Returns false when another dialog is already shown.
+fn spawn_dialog(app: &PaintApp, ctx: &egui::Context, job: impl FnOnce() -> Option<DialogResult> + Send + 'static) -> bool {
     use std::sync::atomic::Ordering;
     if app.files.busy.swap(true, Ordering::SeqCst) {
-        return;
+        return false;
     }
     let tx = app.files.tx.clone();
     let busy = app.files.busy.clone();
@@ -72,6 +81,12 @@ fn spawn_dialog(app: &PaintApp, ctx: &egui::Context, job: impl FnOnce() -> Optio
         busy.store(false, Ordering::SeqCst);
         ctx.request_repaint();
     });
+    true
+}
+
+/// The absolute form of a path, so one file is recognized however it was named.
+fn absolute(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).or_else(|_| std::path::absolute(path)).unwrap_or_else(|_| path.to_path_buf())
 }
 
 impl PaintApp {
@@ -87,18 +102,31 @@ impl PaintApp {
     pub fn poll_async(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.files.rx.try_recv() {
             match r {
-                DialogResult::Open(paths) => {
-                    for p in paths {
-                        self.open_path(ctx, p);
-                    }
-                }
-                DialogResult::Import(p) => self.import_path(ctx, p),
+                DialogResult::Open(paths) => self.files.queue.extend(paths.into_iter().map(Queued::Open)),
+                DialogResult::Import(tab, p) => self.files.queue.push_back(Queued::Import(tab, p)),
                 DialogResult::Toast(text) => self.show_toast(text),
-                DialogResult::SaveAs(p, f, then) => {
+                DialogResult::SaveAs(tab, p, f, then) => {
+                    // The user may have switched tabs while the dialog was up: save the tab
+                    // that asked (and drop the result if it was closed meanwhile).
+                    let Some(i) = self.tab_index(tab) else { continue };
+                    self.switch_tab(i);
                     if self.save_to(&p, f)
                         && let Some(then) = then
                     {
-                        self.run_pending(ctx, then);
+                        self.run_pending(then);
+                    }
+                }
+            }
+        }
+        while self.ui.modal.is_none()
+            && let Some(q) = self.files.queue.pop_front()
+        {
+            match q {
+                Queued::Open(p) => self.open_path(ctx, p),
+                Queued::Import(tab, p) => {
+                    if let Some(i) = self.tab_index(tab) {
+                        self.switch_tab(i);
+                        self.import_path(p);
                     }
                 }
             }
@@ -112,21 +140,16 @@ impl PaintApp {
             self.ui.modal = Some(Modal::ConfirmSave(action));
         } else {
             self.ui.modal = None;
-            self.pending_now(action);
+            self.run_pending(action);
         }
     }
 
-    fn pending_now(&mut self, action: Pending) {
-        // Context-free part; actions that need a dialog are dispatched on the next frame.
-        self.files.deferred = Some(action);
-    }
-
-    pub fn run_pending(&mut self, _ctx: &egui::Context, action: Pending) {
+    pub fn run_pending(&mut self, action: Pending) {
         match action {
             Pending::CloseTab => self.close_current_tab(),
             Pending::Exit => {
                 // This tab was saved or its changes discarded; go on with the next one.
-                self.file.saved_state = self.history.state_id();
+                self.exit_discarded.insert(self.tab_id);
                 self.request_exit();
             }
         }
@@ -140,13 +163,13 @@ impl PaintApp {
                 (Some(p), Some(f)) => {
                     let p = p.clone();
                     if self.save_to(&p, f) {
-                        self.run_pending(ctx, action);
+                        self.run_pending(action);
                     }
                 }
                 _ => self.save_as_dialog(ctx, Some(SaveFormat::Png), Some(action)),
             }
         } else {
-            self.run_pending(ctx, action);
+            self.run_pending(action);
         }
     }
 
@@ -172,12 +195,13 @@ impl PaintApp {
     pub fn import_dialog(&mut self, ctx: &egui::Context) {
         let tr = self.tr;
         let dir = self.start_dir();
+        let tab = self.tab_id;
         spawn_dialog(self, ctx, move || {
             let mut d = rfd::AsyncFileDialog::new().add_filter(tr.all_images, OPEN_EXTENSIONS);
             if let Some(dir) = dir {
                 d = d.set_directory(dir);
             }
-            pollster::block_on(d.pick_file()).map(|f| DialogResult::Import(f.path().to_path_buf()))
+            pollster::block_on(d.pick_file()).map(|f| DialogResult::Import(tab, f.path().to_path_buf()))
         });
     }
 
@@ -193,7 +217,9 @@ impl PaintApp {
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| tr.untitled.to_owned());
-        spawn_dialog(self, ctx, move || {
+        let tab = self.tab_id;
+        let retry = then.clone();
+        let shown = spawn_dialog(self, ctx, move || {
             let formats: Vec<SaveFormat> = match format {
                 Some(f) => vec![f],
                 None => SaveFormat::IMAGE_FORMATS.to_vec(),
@@ -217,8 +243,12 @@ impl PaintApp {
                     first
                 }
             };
-            Some(DialogResult::SaveAs(path, fmt, then))
+            Some(DialogResult::SaveAs(tab, path, fmt, then))
         });
+        if !shown && let Some(action) = retry {
+            // Another file dialog is still open: keep asking instead of dropping the action.
+            self.ui.modal = Some(Modal::ConfirmSave(action));
+        }
     }
 
     /// Plain "Save": writes back to the current file or asks for a name.
@@ -237,6 +267,8 @@ impl PaintApp {
     pub fn save_to(&mut self, path: &Path, format: SaveFormat) -> bool {
         match io::save(&self.doc, path, format) {
             Ok(size) => {
+                let path = &absolute(path);
+                self.detach_other_tabs_from(path);
                 self.file.saved_state = self.history.state_id();
                 self.file.disk_size = Some(size);
                 // Saving as a project keeps the image path for plain saves only if it is a project.
@@ -256,6 +288,7 @@ impl PaintApp {
 
     /// Opens a file in its own tab (or switches to it when it is already open).
     pub fn open_path(&mut self, _ctx: &egui::Context, path: PathBuf) {
+        let path = absolute(&path);
         if self.focus_open_path(&path) {
             return;
         }
@@ -276,7 +309,7 @@ impl PaintApp {
     }
 
     /// "Import to canvas → From a file": pastes the image as a floating selection.
-    pub fn import_path(&mut self, _ctx: &egui::Context, path: PathBuf) {
+    pub fn import_path(&mut self, path: PathBuf) {
         let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
         match std::fs::read(&path).map_err(io::IoError::from).and_then(|b| io::decode(&b, &ext)) {
             Ok(pixmap) => self.paste_pixmap(pixmap),
@@ -285,25 +318,22 @@ impl PaintApp {
     }
 
     pub fn handle_dropped_files(&mut self, ctx: &egui::Context) {
-        if let Some(deferred) = self.files.deferred.take() {
-            self.run_pending(ctx, deferred);
-        }
         let dropped: Vec<PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        for path in dropped {
-            self.open_path(ctx, path);
-        }
+        self.files.queue.extend(dropped.into_iter().map(Queued::Open));
     }
 }
 
 impl PaintApp {
-    /// Runs `job` on a worker thread and shows its message when it finishes.
-    pub fn run_in_background(&self, ctx: &egui::Context, job: impl FnOnce() -> String + Send + 'static) {
+    /// Runs `job` on a worker thread and shows its message (if any) when it finishes.
+    pub fn run_in_background(&self, ctx: &egui::Context, job: impl FnOnce() -> Option<String> + Send + 'static) {
         let tx = self.files.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(DialogResult::Toast(job()));
-            ctx.request_repaint();
+            if let Some(msg) = job() {
+                let _ = tx.send(DialogResult::Toast(msg));
+                ctx.request_repaint();
+            }
         });
     }
 }

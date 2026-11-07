@@ -2,7 +2,6 @@
 
 use crate::app::PaintApp;
 use crate::commands::Command;
-use crate::files::Pending;
 use crate::tools::{MAX_SIZE, Tool};
 use bgpaint_core::history::Change;
 use bgpaint_core::io::SaveFormat;
@@ -28,10 +27,10 @@ impl PaintApp {
             Command::SaveAs(f) => self.save_as_dialog(ctx, f, None),
             Command::SaveProject => self.save_as_dialog(ctx, Some(SaveFormat::Ora), None),
             Command::Print | Command::PageSetup | Command::PrintPreview => self.open_print(cmd),
-            Command::Share => self.share(),
+            Command::Share => self.share(ctx),
             Command::SetWallpaper(mode) => self.set_wallpaper(ctx, mode),
             Command::ImageProperties => self.open_properties(),
-            Command::Exit => self.confirm_unsaved(Pending::Exit),
+            Command::Exit => self.begin_exit(),
             Command::Undo => {
                 if self.active.is_idle() {
                     self.history.undo(&mut self.doc);
@@ -98,6 +97,10 @@ impl PaintApp {
             Command::SetZoom(z) => self.view.zoom_center(z),
             Command::ToggleRulers => {
                 self.settings.show_rulers = !self.settings.show_rulers;
+                self.settings.save();
+            }
+            Command::ToggleCheckerboard => {
+                self.settings.show_checkerboard = !self.settings.show_checkerboard;
                 self.settings.save();
             }
             Command::ToggleGrid => {

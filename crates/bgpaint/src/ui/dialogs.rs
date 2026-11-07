@@ -111,7 +111,10 @@ impl PaintApp {
                 match r {
                     Footer::Primary => self.resolve_unsaved(ctx, action, true),
                     Footer::Secondary => self.resolve_unsaved(ctx, action, false),
-                    Footer::Cancel => {}
+                    Footer::Cancel => {
+                        self.exit_discarded.clear();
+                        self.return_to_tab = None;
+                    }
                     Footer::None => self.ui.modal = Some(Modal::ConfirmSave(action)),
                 }
             }

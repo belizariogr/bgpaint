@@ -333,7 +333,7 @@ impl PaintApp {
                                 | PageDown
                         );
                         let styled = modifiers.command && matches!(key, A | Z | B | I | U);
-                        (editing && !(modifiers.command && matches!(key, PageUp | PageDown))) || styled
+                        (editing && !(modifiers.command && matches!(key, PageUp | PageDown | Tab))) || styled
                     }
                     _ => false,
                 };
@@ -440,6 +440,8 @@ impl PaintApp {
                                                 Some(style.cosmic_align()),
                                             )
                                         });
+                                        // The old selection may point past the restored text.
+                                        op.editor.set_selection(Selection::None);
                                         op.editor.set_cursor(Cursor::new(0, 0));
                                         op.editor.action(&mut f.system, Action::Motion(Motion::BufferEnd));
                                         changed = true;

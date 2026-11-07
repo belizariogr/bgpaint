@@ -67,6 +67,7 @@ pub enum Command {
     SetZoom(f32),
     ToggleRulers,
     ToggleGrid,
+    ToggleCheckerboard,
     ToggleStatusBar,
     SetAutoHideToolbar(bool),
     ToggleFullscreen,
