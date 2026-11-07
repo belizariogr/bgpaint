@@ -43,64 +43,6 @@ pub struct NativeMenu {
     rx: Receiver<MenuEvent>,
 }
 
-/// Strings that only the Mac menu uses.
-struct MacStrings {
-    about: &'static str,
-    check_updates: &'static str,
-    settings: &'static str,
-    services: &'static str,
-    hide: &'static str,
-    hide_others: &'static str,
-    show_all: &'static str,
-    quit: &'static str,
-    image: &'static str,
-    window: &'static str,
-    help: &'static str,
-    close_tab: &'static str,
-    minimize: &'static str,
-    zoom_window: &'static str,
-    bring_all: &'static str,
-    website: &'static str,
-}
-
-const MAC_EN: MacStrings = MacStrings {
-    about: "About BGPaint",
-    check_updates: "Check for Updates…",
-    settings: "Settings…",
-    services: "Services",
-    hide: "Hide BGPaint",
-    hide_others: "Hide Others",
-    show_all: "Show All",
-    quit: "Quit BGPaint",
-    image: "Image",
-    window: "Window",
-    help: "Help",
-    close_tab: "Close Tab",
-    minimize: "Minimize",
-    zoom_window: "Zoom",
-    bring_all: "Bring All to Front",
-    website: "BGPaint on GitHub",
-};
-
-const MAC_PT: MacStrings = MacStrings {
-    about: "Sobre o BGPaint",
-    check_updates: "Procurar Atualizações…",
-    settings: "Ajustes…",
-    services: "Serviços",
-    hide: "Ocultar BGPaint",
-    hide_others: "Ocultar Outros",
-    show_all: "Mostrar Tudo",
-    quit: "Encerrar BGPaint",
-    image: "Imagem",
-    window: "Janela",
-    help: "Ajuda",
-    close_tab: "Fechar Aba",
-    minimize: "Minimizar",
-    zoom_window: "Zoom",
-    bring_all: "Trazer Todas para a Frente",
-    website: "BGPaint no GitHub",
-};
-
 fn cmd(code: Code) -> Option<Accelerator> {
     Some(Accelerator::new(Modifiers::META, code))
 }
@@ -164,7 +106,7 @@ impl NativeMenu {
     /// the application exists (from the app's constructor).
     pub fn install(app: &PaintApp, ctx: &egui::Context) -> Self {
         let tr = app.tr;
-        let m = if std::ptr::eq(tr, &crate::i18n::PT_BR) { &MAC_PT } else { &MAC_EN };
+        let m = crate::i18n::mac_strings(tr);
         let mut b = Builder { actions: HashMap::new(), dynamic: Vec::new(), next_id: 0 };
         let sep = PredefinedMenuItem::separator;
         let has_sel: fn(&PaintApp) -> bool = PaintApp::has_selection;

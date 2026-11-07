@@ -30,6 +30,93 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
+// ----- Dark mode -----
+
+/// What the desktop asked for: 0 = unknown, 1 = light, 2 = dark.
+static DESKTOP_DARK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Whether the desktop prefers a dark theme, as last read by [`refresh_desktop_theme`]. winit
+/// reports the system theme on macOS but not on Linux, where this fills the gap.
+pub fn desktop_dark() -> Option<bool> {
+    match DESKTOP_DARK.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
+/// The UI to repaint when the desktop theme changes (set once the app exists).
+static THEME_REPAINT: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+pub fn repaint_on_desktop_theme_change(ctx: &egui::Context) {
+    let _ = THEME_REPAINT.set(ctx.clone());
+}
+
+/// Reads the desktop's light/dark preference in the background (it runs external programs),
+/// then repaints the UI if it changed. Does nothing outside Linux.
+pub fn refresh_desktop_theme() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    std::thread::spawn(move || {
+        let value = match read_desktop_dark() {
+            Some(true) => 2,
+            Some(false) => 1,
+            None => 0,
+        };
+        let old = DESKTOP_DARK.swap(value, std::sync::atomic::Ordering::Relaxed);
+        if old != value
+            && let Some(ctx) = THEME_REPAINT.get()
+        {
+            ctx.request_repaint();
+        }
+    });
+}
+
+/// The freedesktop appearance portal (GNOME, KDE, and others), then GNOME's settings.
+fn read_desktop_dark() -> Option<bool> {
+    const PORTAL: [&str; 7] = [
+        "call",
+        "--session",
+        "--dest=org.freedesktop.portal.Desktop",
+        "--object-path=/org/freedesktop/portal/desktop",
+        "--method=org.freedesktop.portal.Settings.ReadOne",
+        "org.freedesktop.appearance",
+        "color-scheme",
+    ];
+    if has("gdbus") {
+        let mut args = PORTAL;
+        // Older portals only have the (deprecated) Read.
+        for method in ["--method=org.freedesktop.portal.Settings.ReadOne", "--method=org.freedesktop.portal.Settings.Read"] {
+            args[4] = method;
+            if let Some(scheme) = output("gdbus", &args).as_deref().and_then(portal_color_scheme) {
+                // 0: no preference (light), 1: dark, 2: light.
+                return Some(scheme == 1);
+            }
+        }
+    }
+    if has("gsettings") {
+        if let Some(scheme) = output("gsettings", &["get", "org.gnome.desktop.interface", "color-scheme"]) {
+            if scheme.contains("prefer-dark") {
+                return Some(true);
+            }
+            if scheme.contains("prefer-light") {
+                return Some(false);
+            }
+        }
+        if let Some(theme) = output("gsettings", &["get", "org.gnome.desktop.interface", "gtk-theme"]) {
+            return Some(theme.to_ascii_lowercase().contains("dark"));
+        }
+    }
+    None
+}
+
+/// The value of a portal reply such as `(<uint32 1>,)` or `(<<uint32 1>>,)`.
+fn portal_color_scheme(reply: &str) -> Option<u32> {
+    let rest = &reply[reply.find("uint32 ")? + "uint32 ".len()..];
+    rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())].parse().ok()
+}
+
 // ----- Printing -----
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,6 +358,13 @@ pub fn set_wallpaper(file: &Path, mode: WallpaperMode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn portal_replies() {
+        assert_eq!(super::portal_color_scheme("(<uint32 1>,)\n"), Some(1));
+        assert_eq!(super::portal_color_scheme("(<<uint32 2>>,)\n"), Some(2));
+        assert_eq!(super::portal_color_scheme("(<'x'>,)"), None);
+    }
+
     use super::*;
 
     #[test]

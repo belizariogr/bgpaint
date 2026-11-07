@@ -186,6 +186,7 @@ impl PaintApp {
         {
             app.native_menu = Some(crate::mac_menu::NativeMenu::install(&app, &cc.egui_ctx));
         }
+        crate::platform::repaint_on_desktop_theme_change(&cc.egui_ctx);
         app.sync_theme(&cc.egui_ctx);
         crate::tools::text::preload_fonts();
         for path in open {
@@ -197,12 +198,13 @@ impl PaintApp {
         app
     }
 
-    /// Picks light or dark tokens from the setting and the system theme.
+    /// Picks light or dark tokens from the setting and the system theme (reported by winit on
+    /// macOS, read from the desktop settings on Linux; light when neither says).
     fn sync_theme(&mut self, ctx: &egui::Context) {
         let dark = match self.settings.theme {
             ThemeMode::Light => false,
             ThemeMode::Dark => true,
-            ThemeMode::System => ctx.system_theme().is_some_and(|t| t == egui::Theme::Dark),
+            ThemeMode::System => ctx.system_theme().map(|t| t == egui::Theme::Dark).or_else(crate::platform::desktop_dark).unwrap_or(false),
         };
         if self.theme_dark != Some(dark) {
             self.theme_dark = Some(dark);
@@ -347,6 +349,10 @@ impl View {
 impl eframe::App for PaintApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Linux desktops don't notify winit of theme changes: read it again on coming back.
+        if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))) {
+            crate::platform::refresh_desktop_theme();
+        }
         self.sync_theme(&ctx);
         self.handle_dropped_files(&ctx);
         #[cfg(target_os = "macos")]
