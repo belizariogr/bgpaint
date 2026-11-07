@@ -131,9 +131,10 @@ impl PaintApp {
         ShapePaint {
             outline: self.tools.outline,
             fill: self.tools.fill,
-            width: self.tools.shape_width,
+            width: self.tools.shape_stroke.size,
             outline_color: outline,
             fill_color: fill,
+            opacity: self.tools.shape_stroke.opacity,
         }
     }
 
@@ -411,6 +412,7 @@ mod tests {
                 width: 1.0,
                 outline_color: Color::BLACK,
                 fill_color: Color::WHITE,
+                opacity: 1.0,
             },
             swap: false,
             drag: None,

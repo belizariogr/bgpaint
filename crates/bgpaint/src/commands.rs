@@ -58,7 +58,6 @@ pub enum Command {
     SetShape(ShapeKind),
     SetOutline(ShapeStyle),
     SetFill(ShapeStyle),
-    SetSize(f32),
     GrowSize(bool),
     ZoomIn,
     ZoomOut,

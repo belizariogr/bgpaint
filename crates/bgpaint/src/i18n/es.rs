@@ -98,7 +98,6 @@ pub static STRINGS: Strings = Strings {
     marker: "Marcador",
     natural_pencil: "Lápiz natural",
     watercolor: "Pincel para acuarela",
-    size: "Tamaño",
     // Shapes
     shape_line: "Línea",
     shape_curve: "Curva",

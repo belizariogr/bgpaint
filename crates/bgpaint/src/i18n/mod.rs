@@ -111,7 +111,6 @@ pub struct Strings {
     pub marker: &'static str,
     pub natural_pencil: &'static str,
     pub watercolor: &'static str,
-    pub size: &'static str,
     // Shapes
     pub shape_line: &'static str,
     pub shape_curve: &'static str,

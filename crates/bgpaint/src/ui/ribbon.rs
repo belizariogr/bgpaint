@@ -291,27 +291,17 @@ impl PaintApp {
         if widgets::chevron_button(ui, t, ch, Id::unique("rb-fill-ch"), shape_tool, self.ui.open_menu == Some(MenuKind::Fill)).clicked() {
             self.toggle_menu(MenuKind::Fill, fill.union(ch));
         }
-        let size = Rect::from_center_size(at(686.0, top + 42.0), vec2(32.0, 56.0));
-        let resp = ui.interact(size, Id::unique("rb-size"), if shape_tool { Sense::click() } else { Sense::hover() });
-        let open = self.ui.open_menu == Some(MenuKind::Size);
-        let fill = if open { t.hover } else { widgets::state_fill(t, &resp, shape_tool) };
-        ui.painter().rect_filled(size, widgets::RADIUS, fill);
-        let c = if shape_tool { t.text } else { t.text_disabled };
-        widgets::paint_icon(ui.painter(), at(686.0, top + 34.0), ic::SIZE, 22.0, c);
-        widgets::paint_chevron(ui.painter(), at(686.0, top + 58.0), c, 12.0);
-        if resp.on_hover_text(tr.size).clicked() {
-            self.toggle_menu(MenuKind::Size, size);
-        }
-        group_label(ui, 562.0, tr.group_shapes);
-        sep(ui, 718.0);
+        // The outline width comes from the size slider beside the canvas.
+        group_label(ui, 547.0, tr.group_shapes);
+        sep(ui, 668.0);
 
         // --- Colors ---
-        self.color_group(ui, t, x0 + 718.0, top);
-        group_label(ui, 880.0, tr.group_colors);
-        sep(ui, 1071.0);
+        self.color_group(ui, t, x0 + 668.0, top);
+        group_label(ui, 830.0, tr.group_colors);
+        sep(ui, 1021.0);
 
         // --- Layers ---
-        let lr = Rect::from_center_size(at(1110.0, top + 42.0), vec2(40.0, 40.0));
+        let lr = Rect::from_center_size(at(1060.0, top + 42.0), vec2(40.0, 40.0));
         if IconButton::new(ic::LAYERS)
             .size(22.0)
             .selected(self.settings.show_layers)
@@ -321,7 +311,7 @@ impl PaintApp {
         {
             self.execute(&ctx, Command::ToggleLayersPanel);
         }
-        group_label(ui, 1110.0, tr.group_layers);
+        group_label(ui, 1060.0, tr.group_layers);
 
         // Collapse chevron at the bottom right.
         let cr = Rect::from_center_size(pos2(r.right() - 16.0, label_y), vec2(24.0, 20.0));
@@ -595,6 +585,7 @@ impl PaintApp {
                 width: 8.0,
                 outline_color: color,
                 fill_color: color,
+                opacity: 1.0,
             };
             let mut pb = bgpaint_core::tiny_skia::PathBuilder::new();
             pb.move_to(4.0, 15.0);
