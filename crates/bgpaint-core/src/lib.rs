@@ -12,6 +12,7 @@ pub mod io;
 pub mod noise;
 pub mod ora;
 pub mod raster;
+pub mod selection;
 pub mod shapes;
 
 pub use tiny_skia;

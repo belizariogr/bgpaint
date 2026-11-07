@@ -1,51 +1,551 @@
-//! Selection tool (implemented in stage 4).
+//! Rectangle and free-form selection, floating content (move, resize, rotate, Ctrl+drag copy,
+//! transparent selection), clipboard and crop.
 
+use super::interaction::Active;
+use super::transform::{BoxGeom, BoxHit};
+use super::{SelectMode, Tool};
 use crate::app::PaintApp;
+use crate::canvas::view::View;
+use crate::theme::Theme;
+use crate::ui::menubar::MenuKind;
+use bgpaint_core::color::Color;
 use bgpaint_core::document::ActivePreview;
-use bgpaint_core::geom::Point;
-use bgpaint_core::tiny_skia::Pixmap;
-use egui::{Modifiers, PointerButton, Pos2};
+use bgpaint_core::geom::{PixelRect, Point, RectF};
+use bgpaint_core::history::Change;
+use bgpaint_core::raster;
+use bgpaint_core::selection::{SelectionMask, key_out};
+use bgpaint_core::shapes::RasterShape;
+use bgpaint_core::tiny_skia::{Pixmap, Transform};
+use egui::{Color32, Modifiers, PointerButton, Pos2, Stroke};
 
-pub struct SelectOp;
+/// Pixels lifted off the layer and being moved/transformed.
+struct Floating {
+    /// Content as lifted (or pasted).
+    original: Pixmap,
+    /// `original` after "transparent selection" keyed out Color 2.
+    pixels: Pixmap,
+    /// Undo records already applied to the document (lift, Ctrl+drag stamps, canvas growth).
+    changes: Vec<Change>,
+}
+
+#[derive(Clone)]
+enum SelDrag {
+    Create,
+    Box(BoxHit, Point, BoxGeom),
+}
+
+pub struct SelectOp {
+    mode: SelectMode,
+    mask: Option<SelectionMask>,
+    lasso: Vec<Point>,
+    start: Point,
+    current: Point,
+    pub geom: BoxGeom,
+    floating: Option<Floating>,
+    drag: Option<SelDrag>,
+    raster: Option<RasterShape>,
+    canvas: (u32, u32),
+}
+
+impl ActivePreview for SelectOp {
+    fn bounds(&self) -> PixelRect {
+        self.raster.as_ref().map_or(PixelRect::EMPTY, RasterShape::bounds)
+    }
+
+    fn apply(&self, region: &mut Pixmap, rect: PixelRect) {
+        if let Some(r) = &self.raster {
+            raster::draw_over(region, &r.pixmap, r.x - rect.x0, r.y - rect.y0, 1.0);
+        }
+    }
+}
 
 impl SelectOp {
     pub fn preview(&self) -> Option<&dyn ActivePreview> {
-        None
+        self.floating.as_ref().map(|_| self as &dyn ActivePreview)
+    }
+
+    fn established(&self) -> bool {
+        self.mask.is_some() || self.floating.is_some()
+    }
+
+    /// Renders the floating pixels at the current box; returns the area to redraw.
+    fn update(&mut self) -> PixelRect {
+        let before = self.bounds();
+        self.raster = self.floating.as_ref().and_then(|f| render_floating(&f.pixels, &self.geom, self.canvas));
+        before.union(&self.bounds())
+    }
+
+    fn pixel_rect(&self) -> PixelRect {
+        let r = self.geom.rect;
+        PixelRect::new(r.min.x.round() as i32, r.min.y.round() as i32, r.max.x.round() as i32, r.max.y.round() as i32)
     }
 }
 
+/// Draws `pixels` stretched into `geom`, clipped to the canvas.
+fn render_floating(pixels: &Pixmap, geom: &BoxGeom, canvas: (u32, u32)) -> Option<RasterShape> {
+    let r = geom.rect;
+    let (sx, sy) = (r.width() / pixels.width() as f32, r.height() / pixels.height() as f32);
+    let exact = geom.angle == 0.0 && (sx - 1.0).abs() < 1e-4 && (sy - 1.0).abs() < 1e-4 && r.min.x.fract() == 0.0 && r.min.y.fract() == 0.0;
+    let bounds = if exact {
+        PixelRect::from_xywh(r.min.x as i32, r.min.y as i32, pixels.width(), pixels.height())
+    } else {
+        let c = geom.corners();
+        let xs = c.iter().map(|p| p.x);
+        let ys = c.iter().map(|p| p.y);
+        PixelRect::enclosing(
+            xs.clone().fold(f32::MAX, f32::min),
+            ys.clone().fold(f32::MAX, f32::min),
+            xs.fold(f32::MIN, f32::max),
+            ys.fold(f32::MIN, f32::max),
+        )
+    }
+    .clamp_to(canvas.0, canvas.1);
+    if bounds.is_empty() {
+        return None;
+    }
+    let mut out = raster::pixmap(bounds.width(), bounds.height());
+    if exact {
+        raster::paste_region(&mut out, pixels, r.min.x as i32 - bounds.x0, r.min.y as i32 - bounds.y0);
+    } else {
+        let c = r.center();
+        let t = Transform::from_scale(sx, sy)
+            .post_translate(r.min.x, r.min.y)
+            .post_concat(Transform::from_rotate_at(geom.angle, c.x, c.y))
+            .post_translate(-bounds.x0 as f32, -bounds.y0 as f32);
+        raster::draw_transformed(&mut out, pixels, t, true);
+    }
+    Some(RasterShape { pixmap: out, x: bounds.x0, y: bounds.y0 })
+}
+
 impl PaintApp {
-    pub fn select_pointer_down(&mut self, _p: Point, _pos: Pos2, _b: PointerButton, _m: Modifiers) {}
-    pub fn select_pointer_move(&mut self, _op: &mut SelectOp, _p: Point, _m: Modifiers) {}
-    pub fn select_pointer_up(&mut self, _op: &mut SelectOp, _p: Point, _b: PointerButton) {}
-    pub fn commit_selection(&mut self, _op: SelectOp) {}
-    pub fn cancel_selection(&mut self, _op: SelectOp) {}
+    fn new_select_op(&self, p: Point) -> SelectOp {
+        SelectOp {
+            mode: self.tools.select_mode,
+            mask: None,
+            lasso: vec![p],
+            start: p,
+            current: p,
+            geom: BoxGeom::new(RectF::from_points(p, p)),
+            floating: None,
+            drag: Some(SelDrag::Create),
+            raster: None,
+            canvas: (self.doc.width(), self.doc.height()),
+        }
+    }
+
+    pub fn select_pointer_down(&mut self, p: Point, pos: Pos2, button: PointerButton, m: Modifiers) {
+        if button == PointerButton::Secondary {
+            self.ui.open_menu = Some(MenuKind::Canvas(pos));
+            self.ui.menu_anchor = egui::Rect::from_center_size(pos, egui::vec2(1.0, 1.0));
+            return;
+        }
+        let tol = 6.0 / self.view.scale();
+        let rot = 24.0 / self.view.scale();
+        let hit = match &self.active {
+            Active::Select(op) if op.established() => op.geom.hit(p, tol, rot),
+            _ => None,
+        };
+        if let Some(hit) = hit {
+            let Active::Select(mut op) = std::mem::take(&mut self.active) else { return };
+            if m.command && op.floating.is_some() {
+                // Ctrl+drag a floating selection: leave a copy behind.
+                self.stamp_floating(&mut op);
+            }
+            self.ensure_floating(&mut op, m.command);
+            op.drag = Some(SelDrag::Box(hit, p, op.geom));
+            self.active = Active::Select(op);
+            return;
+        }
+        self.commit_interaction();
+        self.active = Active::Select(self.new_select_op(p));
+    }
+
+    pub fn select_pointer_move(&mut self, op: &mut SelectOp, p: Point, m: Modifiers) {
+        match op.drag.clone() {
+            Some(SelDrag::Create) => {
+                let (w, h) = (self.doc.width() as f32, self.doc.height() as f32);
+                let p = Point::new(p.x.clamp(0.0, w), p.y.clamp(0.0, h));
+                let p = if m.shift && op.mode == SelectMode::Rectangle {
+                    let (dx, dy) = (p.x - op.start.x, p.y - op.start.y);
+                    let s = dx.abs().max(dy.abs());
+                    Point::new(op.start.x + s * dx.signum(), op.start.y + s * dy.signum())
+                } else {
+                    p
+                };
+                op.current = p;
+                if op.mode == SelectMode::FreeForm && op.lasso.last().is_none_or(|l| l.distance(p) >= 1.0) {
+                    op.lasso.push(p);
+                }
+            }
+            Some(SelDrag::Box(hit, start, orig)) => {
+                op.geom = orig.drag(hit, start, p, m.shift);
+                let d = op.update();
+                self.preview_dirty.add(d);
+            }
+            None => {}
+        }
+    }
+
+    pub fn select_pointer_up(&mut self, op: &mut SelectOp, _p: Point, _b: PointerButton) {
+        if let Some(SelDrag::Create) = op.drag.take() {
+            let (w, h) = op.canvas;
+            op.mask = match op.mode {
+                SelectMode::Rectangle => {
+                    let r = PixelRect::new(
+                        op.start.x.min(op.current.x).round() as i32,
+                        op.start.y.min(op.current.y).round() as i32,
+                        op.start.x.max(op.current.x).round() as i32,
+                        op.start.y.max(op.current.y).round() as i32,
+                    )
+                    .clamp_to(w, h);
+                    (!r.is_empty()).then(|| SelectionMask::rect(r))
+                }
+                SelectMode::FreeForm => SelectionMask::polygon(&op.lasso, w, h),
+            };
+            if let Some(mask) = &op.mask {
+                let r = mask.rect;
+                op.geom = BoxGeom::new(RectF::from_xywh(r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32));
+            }
+        }
+    }
+
+    /// Lifts the selected pixels into a floating layer (leaving a transparent hole unless `copy`).
+    fn ensure_floating(&mut self, op: &mut SelectOp, copy: bool) {
+        if op.floating.is_some() {
+            return;
+        }
+        let Some(mask) = op.mask.clone() else { return };
+        let Some(original) = mask.extract(&self.doc.active_layer().pixels) else { return };
+        let mut changes = Vec::new();
+        if !copy {
+            if let Some(c) = self.doc.edit_active(mask.rect, |layer| mask.clear(layer)) {
+                changes.push(c);
+            }
+        }
+        let pixels = self.keyed(&original);
+        op.floating = Some(Floating { original, pixels, changes });
+        let d = op.update();
+        self.preview_dirty.add(d);
+    }
+
+    fn keyed(&self, original: &Pixmap) -> Pixmap {
+        let mut p = original.clone();
+        if self.tools.transparent_selection {
+            key_out(&mut p, self.colors.secondary);
+        }
+        p
+    }
+
+    /// Draws the floating pixels into the layer without ending the selection.
+    fn stamp_floating(&mut self, op: &mut SelectOp) {
+        let Some(r) = op.raster.clone() else { return };
+        if let Some(c) = self.doc.edit_active(r.bounds(), |layer| raster::draw_over(layer, &r.pixmap, r.x, r.y, 1.0)) {
+            if let Some(f) = &mut op.floating {
+                f.changes.push(c);
+            }
+        }
+    }
+
+    pub fn commit_selection(&mut self, mut op: SelectOp) {
+        if op.floating.is_none() {
+            return;
+        }
+        self.stamp_floating(&mut op);
+        self.preview_dirty.add(op.bounds());
+        if let Some(f) = op.floating.take() {
+            self.history.push("selection", f.changes);
+        }
+    }
+
+    pub fn cancel_selection(&mut self, mut op: SelectOp) {
+        if let Some(f) = op.floating.take() {
+            for mut c in f.changes.into_iter().rev() {
+                c.apply(&mut self.doc);
+            }
+        }
+        self.preview_dirty.add(op.bounds());
+    }
+
     pub fn has_selection(&self) -> bool {
-        false
+        matches!(&self.active, Active::Select(op) if op.established())
     }
-    pub fn paste_pixmap(&mut self, _p: Pixmap) {}
-}
 
-impl PaintApp {
-    pub fn cut(&mut self) {}
-    pub fn copy(&mut self) {}
-    pub fn paste(&mut self) {}
-    pub fn copy_visible(&mut self) {}
-    pub fn select_all(&mut self) {}
-    pub fn invert_selection(&mut self) {}
-    pub fn delete_selection(&mut self) {}
-    pub fn set_transparent_selection(&mut self, v: bool) {
-        self.tools.transparent_selection = v;
-    }
-    pub fn crop_to_selection(&mut self) {}
-    pub fn transform_selection(&mut self, _f: &dyn Fn(&Pixmap) -> Pixmap) -> bool {
-        false
-    }
     pub fn selection_size(&self) -> Option<(u32, u32)> {
-        None
+        match &self.active {
+            Active::Select(op) if op.established() => Some((op.geom.rect.width().round() as u32, op.geom.rect.height().round() as u32)),
+            Active::Select(op) if op.drag.is_some() => {
+                let r = RectF::from_points(op.start, op.current);
+                Some((r.width().round() as u32, r.height().round() as u32))
+            }
+            _ => None,
+        }
     }
-    pub fn select_cursor(&self, _pos: Pos2) -> egui::CursorIcon {
+
+    pub fn select_cursor(&self, pos: Pos2) -> egui::CursorIcon {
+        if let Active::Select(op) = &self.active {
+            if op.established() {
+                let p = self.view.to_canvas(pos);
+                if let Some(h) = op.geom.hit(p, 6.0 / self.view.scale(), 24.0 / self.view.scale()) {
+                    return h.cursor(op.geom.angle);
+                }
+            }
+        }
         egui::CursorIcon::Crosshair
     }
-    pub fn paint_tool_overlays(&self, _painter: &egui::Painter, _t: &crate::theme::Theme) {}
+
+    /// Selected pixels of the active layer (or the floating content).
+    fn selected_pixels(&self) -> Option<Pixmap> {
+        let Active::Select(op) = &self.active else { return None };
+        if op.floating.is_some() {
+            return op.raster.as_ref().map(|r| r.pixmap.clone());
+        }
+        op.mask.as_ref()?.extract(&self.doc.active_layer().pixels)
+    }
+
+    pub fn copy(&mut self) {
+        if let Some(p) = self.selected_pixels() {
+            crate::clipboard::set_image(&p);
+        }
+    }
+
+    pub fn cut(&mut self) {
+        if self.has_selection() {
+            self.copy();
+            self.delete_selection();
+        }
+    }
+
+    pub fn copy_visible(&mut self) {
+        let rect = match &self.active {
+            Active::Select(op) if op.established() => op.pixel_rect().clamp_to(self.doc.width(), self.doc.height()),
+            _ => self.doc.bounds(),
+        };
+        if !rect.is_empty() {
+            crate::clipboard::set_image(&self.doc.flatten_region(rect, true));
+        }
+    }
+
+    pub fn paste(&mut self) {
+        if let Some(p) = crate::clipboard::get_image() {
+            self.paste_pixmap(p);
+        }
+    }
+
+    /// Pastes an image as a floating selection at the top-left of the visible canvas, growing the
+    /// canvas when the image does not fit (as Paint offers to).
+    pub fn paste_pixmap(&mut self, pixmap: Pixmap) {
+        self.commit_interaction();
+        let mut changes = Vec::new();
+        if pixmap.width() > self.doc.width() || pixmap.height() > self.doc.height() {
+            let before = self.doc.snapshot();
+            self.doc.resize_canvas(self.doc.width().max(pixmap.width()), self.doc.height().max(pixmap.height()), 0, 0);
+            changes.push(Change::document(before));
+        }
+        let (a, _) = self.view.visible_canvas();
+        let x = a.x.max(0.0).floor().min((self.doc.width() - pixmap.width()) as f32);
+        let y = a.y.max(0.0).floor().min((self.doc.height() - pixmap.height()) as f32);
+        let rect = PixelRect::from_xywh(x as i32, y as i32, pixmap.width(), pixmap.height());
+        let mut op = self.new_select_op(Point::new(x, y));
+        op.drag = None;
+        op.mask = Some(SelectionMask::rect(rect));
+        op.geom = BoxGeom::new(RectF::from_xywh(x, y, pixmap.width() as f32, pixmap.height() as f32));
+        let pixels = self.keyed(&pixmap);
+        op.floating = Some(Floating { original: pixmap, pixels, changes });
+        let d = op.update();
+        self.preview_dirty.add(d);
+        self.tool = Tool::Select;
+        self.active = Active::Select(op);
+    }
+
+    pub fn select_all(&mut self) {
+        self.commit_interaction();
+        self.tool = Tool::Select;
+        let mut op = self.new_select_op(Point::new(0.0, 0.0));
+        op.drag = None;
+        let r = self.doc.bounds();
+        op.mask = Some(SelectionMask::rect(r));
+        op.geom = BoxGeom::new(RectF::from_xywh(0.0, 0.0, r.width() as f32, r.height() as f32));
+        self.active = Active::Select(op);
+    }
+
+    pub fn invert_selection(&mut self) {
+        let mask = match &self.active {
+            Active::Select(op) if op.floating.is_some() => Some(SelectionMask::rect(op.pixel_rect())),
+            Active::Select(op) => op.mask.clone(),
+            _ => None,
+        };
+        let Some(mask) = mask else { return };
+        self.commit_interaction();
+        let Some(inv) = mask.inverted(self.doc.width(), self.doc.height()) else { return };
+        let mut op = self.new_select_op(Point::new(0.0, 0.0));
+        op.drag = None;
+        let r = inv.rect;
+        op.geom = BoxGeom::new(RectF::from_xywh(r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32));
+        op.mask = Some(inv);
+        self.active = Active::Select(op);
+    }
+
+    pub fn delete_selection(&mut self) {
+        let Active::Select(mut op) = std::mem::take(&mut self.active) else { return };
+        if let Some(f) = op.floating.take() {
+            // The hole is already cut; dropping the floating pixels deletes them.
+            self.preview_dirty.add(op.bounds());
+            self.history.push("delete", f.changes);
+        } else if let Some(mask) = &op.mask {
+            let change = self.doc.edit_active(mask.rect, |layer| mask.clear(layer));
+            self.history.push_one("delete", change);
+        }
+    }
+
+    pub fn set_transparent_selection(&mut self, on: bool) {
+        self.tools.transparent_selection = on;
+        if let Active::Select(op) = &mut self.active {
+            if let Some(f) = &mut op.floating {
+                let mut p = f.original.clone();
+                if on {
+                    key_out(&mut p, self.colors.secondary);
+                }
+                f.pixels = p;
+                let d = op.update();
+                self.preview_dirty.add(d);
+            }
+        }
+    }
+
+    pub fn crop_to_selection(&mut self) {
+        let (rect, mask) = match &self.active {
+            Active::Select(op) if op.established() => (op.pixel_rect().clamp_to(self.doc.width(), self.doc.height()), op.mask.clone()),
+            _ => return,
+        };
+        self.commit_interaction();
+        if rect.is_empty() {
+            return;
+        }
+        let before = self.doc.snapshot();
+        let keep_shape = mask.filter(|m| !m.is_rect() && m.rect == rect);
+        self.doc.map_layers(|p| {
+            let mut out = raster::copy_region(p, rect).unwrap_or_else(|| raster::pixmap(rect.width(), rect.height()));
+            if let Some(m) = &keep_shape {
+                // Free-form crop: pixels outside the lasso become transparent.
+                let local = m.inverted(p.width(), p.height());
+                if let Some(local) = local {
+                    let mut full = p.clone();
+                    local.clear(&mut full);
+                    out = raster::copy_region(&full, rect).unwrap_or(out);
+                }
+            }
+            out
+        });
+        self.history.push("crop", vec![Change::document(before)]);
+    }
+
+    /// Applies a pixel transform (rotate, flip, invert...) to the floating selection, if any.
+    pub fn transform_selection(&mut self, f: &dyn Fn(&Pixmap) -> Pixmap) -> bool {
+        let Active::Select(mut op) = std::mem::take(&mut self.active) else { return false };
+        if !op.established() {
+            self.active = Active::Select(op);
+            return false;
+        }
+        self.ensure_floating(&mut op, false);
+        if let Some(fl) = &mut op.floating {
+            fl.original = f(&fl.original);
+            fl.pixels = self.keyed(&fl.original);
+            let c = op.geom.rect.center();
+            let (w, h) = (fl.original.width() as f32, fl.original.height() as f32);
+            op.geom.rect = RectF::from_xywh((c.x - w / 2.0).round(), (c.y - h / 2.0).round(), w, h);
+        }
+        let d = op.update();
+        self.preview_dirty.add(d);
+        self.active = Active::Select(op);
+        true
+    }
+
+    /// Size of the selection content (for the Resize dialog).
+    pub fn selection_content_size(&self) -> Option<(u32, u32)> {
+        match &self.active {
+            Active::Select(op) if op.established() => Some((op.geom.rect.width().round() as u32, op.geom.rect.height().round() as u32)),
+            _ => None,
+        }
+    }
+
+    /// Arrow keys nudge the selection by one pixel.
+    pub fn selection_keys(&mut self, ctx: &egui::Context) {
+        if !self.has_selection() || ctx.egui_wants_keyboard_input() || self.ui.modal.is_some() {
+            return;
+        }
+        let mut d = (0.0f32, 0.0f32);
+        ctx.input_mut(|i| {
+            for (key, v) in [
+                (egui::Key::ArrowLeft, (-1.0, 0.0)),
+                (egui::Key::ArrowRight, (1.0, 0.0)),
+                (egui::Key::ArrowUp, (0.0, -1.0)),
+                (egui::Key::ArrowDown, (0.0, 1.0)),
+            ] {
+                while i.consume_key(egui::Modifiers::NONE, key) {
+                    d.0 += v.0;
+                    d.1 += v.1;
+                }
+            }
+        });
+        if d == (0.0, 0.0) {
+            return;
+        }
+        let Active::Select(mut op) = std::mem::take(&mut self.active) else { return };
+        self.ensure_floating(&mut op, false);
+        op.geom.rect = op.geom.rect.translate(d.0, d.1);
+        let dirty = op.update();
+        self.preview_dirty.add(dirty);
+        self.active = Active::Select(op);
+    }
+}
+
+/// Marquee / handles of the selection.
+pub fn paint_overlay(op: &SelectOp, view: &View, painter: &egui::Painter, t: &Theme) {
+    let dark = Color32::from_gray(20);
+    match &op.drag {
+        Some(SelDrag::Create) => {
+            if op.mode == SelectMode::FreeForm {
+                let pts: Vec<Pos2> = op.lasso.iter().map(|p| view.to_screen(*p)).collect();
+                if pts.len() > 1 {
+                    painter.add(egui::Shape::line(pts.clone(), Stroke::new(1.0, Color32::WHITE)));
+                    painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, dark), 3.0, 3.0));
+                }
+            } else {
+                let r = egui::Rect::from_two_pos(view.to_screen(op.start), view.to_screen(op.current));
+                crate::ui::widgets::dashed_rect(painter, r, dark, Color32::WHITE);
+            }
+        }
+        _ => {
+            if op.floating.is_none()
+                && op.mode == SelectMode::FreeForm
+                && op.lasso.len() > 2
+                && op.mask.as_ref().is_some_and(|m| !m.is_rect())
+            {
+                let mut pts: Vec<Pos2> = op.lasso.iter().map(|p| view.to_screen(*p)).collect();
+                pts.push(pts[0]);
+                painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, dark), 3.0, 3.0));
+            }
+            if op.established() {
+                op.geom.paint(view, painter, t, true);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn floating_render_exact_and_scaled() {
+        let mut p = raster::pixmap(4, 2);
+        raster::fill_region(&mut p, PixelRect::from_size(4, 2), Color::BLACK);
+        let g = BoxGeom::new(RectF::from_xywh(3.0, 5.0, 4.0, 2.0));
+        let r = render_floating(&p, &g, (20, 20)).unwrap();
+        assert_eq!(r.bounds(), PixelRect::new(3, 5, 7, 7));
+        let g2 = BoxGeom::new(RectF::from_xywh(0.0, 0.0, 8.0, 4.0));
+        let r2 = render_floating(&p, &g2, (20, 20)).unwrap();
+        assert_eq!(r2.bounds(), PixelRect::new(0, 0, 8, 4));
+        assert!(render_floating(&p, &BoxGeom::new(RectF::from_xywh(50.0, 50.0, 4.0, 2.0)), (20, 20)).is_none());
+    }
 }

@@ -36,11 +36,11 @@ impl PaintApp {
 
             // Upload changed pixels.
             let mut dirty = self.doc.take_dirty();
-            if let Some(d) = self.preview_dirty.take() {
-                dirty = Some(dirty.map_or(d, |x| x.union(&d)));
-            }
             if dirty.is_some() {
                 self.thumbs.stale = true;
+            }
+            if let Some(d) = self.preview_dirty.take() {
+                dirty = Some(dirty.map_or(d, |x| x.union(&d)));
             }
             let smooth = self.view.zoom < 0.999;
             self.tiles.update(&ctx, &self.doc, self.active.preview(), dirty, smooth);
@@ -185,7 +185,8 @@ impl PaintApp {
                     CursorIcon::Crosshair
                 }
             }
-            Tool::Fill | Tool::Picker | Tool::Shape => CursorIcon::Crosshair,
+            Tool::Fill | Tool::Picker => CursorIcon::Crosshair,
+            Tool::Shape => self.shape_cursor(pos).unwrap_or(CursorIcon::Crosshair),
             Tool::Text => CursorIcon::Text,
             Tool::Magnifier => CursorIcon::ZoomIn,
             Tool::Select => self.select_cursor(pos),
@@ -337,25 +338,29 @@ impl PaintApp {
         ];
         let mut changed = false;
         for (i, r) in rects.iter().enumerate() {
-            ui.painter().rect(*r, 6, t.panel_bg, Stroke::new(1.0, t.panel_border), egui::StrokeKind::Inside);
-            let glyph = if i == 0 { ic::SIZE } else { ic::DROP };
-            widgets::paint_icon(ui.painter(), pos2(r.center().x, r.top() + 18.0), glyph, 16.0, t.text);
-            let slider_rect = Rect::from_min_max(pos2(r.left(), r.top() + 32.0), pos2(r.right(), r.bottom() - 6.0));
-            let mut v = if i == 0 { ((stroke.size - 1.0) / (MAX_SIZE - 1.0)).sqrt() } else { stroke.opacity };
-            let resp = widgets::slider(ui, t, slider_rect, Id::unique(("size-panel", i)), &mut v, true);
-            if resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on() {
-                if i == 0 {
-                    stroke.size = (1.0 + v * v * (MAX_SIZE - 1.0)).round();
-                } else {
-                    stroke.opacity = (v * 100.0).round() / 100.0;
+            // Each panel lives in its own area so the canvas below never sees its clicks.
+            egui::Area::new(Id::unique(("size-panel-area", i))).order(egui::Order::Middle).fixed_pos(r.min).show(ui.ctx(), |ui| {
+                let (r, _) = ui.allocate_exact_size(r.size(), Sense::hover());
+                ui.painter().rect(r, 6, t.panel_bg, Stroke::new(1.0, t.panel_border), egui::StrokeKind::Inside);
+                let glyph = if i == 0 { ic::SIZE } else { ic::DROP };
+                widgets::paint_icon(ui.painter(), pos2(r.center().x, r.top() + 18.0), glyph, 16.0, t.text);
+                let slider_rect = Rect::from_min_max(pos2(r.left(), r.top() + 32.0), pos2(r.right(), r.bottom() - 6.0));
+                let mut v = if i == 0 { ((stroke.size - 1.0) / (MAX_SIZE - 1.0)).sqrt() } else { stroke.opacity };
+                let resp = widgets::slider(ui, t, slider_rect, Id::unique(("size-panel", i)), &mut v, true);
+                if resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on() {
+                    if i == 0 {
+                        stroke.size = (1.0 + v * v * (MAX_SIZE - 1.0)).round();
+                    } else {
+                        stroke.opacity = (v * 100.0).round() / 100.0;
+                    }
+                    changed = true;
                 }
-                changed = true;
-            }
-            if resp.hovered() || resp.dragged() {
-                let text =
-                    if i == 0 { format!("{} px", stroke.size as i32) } else { format!("{}%", (stroke.opacity * 100.0).round() as i32) };
-                resp.on_hover_text_at_pointer(text);
-            }
+                if resp.hovered() || resp.dragged() {
+                    let text =
+                        if i == 0 { format!("{} px", stroke.size as i32) } else { format!("{}%", (stroke.opacity * 100.0).round() as i32) };
+                    resp.on_hover_text_at_pointer(text);
+                }
+            });
         }
         if changed && let Some(s) = self.tools.stroke_mut(tool) {
             *s = stroke;

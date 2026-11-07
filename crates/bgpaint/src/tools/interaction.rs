@@ -154,8 +154,7 @@ impl PaintApp {
             Active::Resize(op) => {
                 let (dx, dy) = ((p.x - op.start.x).round() as i32, (p.y - op.start.y).round() as i32);
                 op.rect = op.handle.apply(self.doc.bounds(), dx, dy);
-                op.rect.x1 = op.rect.x1.min(op.rect.x0 + bgpaint_core::raster::MAX_SIDE as i32);
-                op.rect.y1 = op.rect.y1.min(op.rect.y0 + bgpaint_core::raster::MAX_SIDE as i32);
+                op.rect = clamp_area(op.rect);
             }
             Active::Pan { last, .. } => {
                 self.view.scroll(pos - *last);
@@ -185,9 +184,10 @@ impl PaintApp {
                 }
             }
             Active::Pan { button: b, .. } if b == button => {}
-            Active::Shape(mut op) => {
-                self.shape_pointer_up(&mut op, p, button);
-                self.active = Active::Shape(op);
+            Active::Shape(op) => {
+                if let Some(op) = self.shape_pointer_up(op, p, button) {
+                    self.active = Active::Shape(op);
+                }
             }
             Active::Select(mut op) => {
                 self.select_pointer_up(&mut op, p, button);
@@ -271,4 +271,32 @@ impl PaintApp {
         }
         self.handle_rects().into_iter().find(|(_, r)| r.expand(4.0).contains(pos)).map(|(h, _)| h)
     }
+}
+
+impl PaintApp {
+    /// Applies the current outline/fill/size/colors to the shape or text being edited.
+    pub fn on_shape_style_changed(&mut self) {
+        self.restyle_shape();
+    }
+
+    /// Handles and frames of the operation in progress.
+    pub fn paint_tool_overlays(&self, painter: &egui::Painter, t: &crate::theme::Theme) {
+        match &self.active {
+            Active::Shape(op) => super::shape::paint_overlay(op, &self.view, painter, t),
+            Active::Select(op) => super::select::paint_overlay(op, &self.view, painter, t),
+            _ => {}
+        }
+    }
+}
+
+/// Limits a canvas rectangle to the supported side and area.
+pub fn clamp_area(mut r: PixelRect) -> PixelRect {
+    use bgpaint_core::raster::{MAX_AREA, MAX_SIDE};
+    r.x1 = r.x1.min(r.x0 + MAX_SIDE as i32);
+    r.y1 = r.y1.min(r.y0 + MAX_SIDE as i32);
+    while r.area() > MAX_AREA {
+        let w = r.width() as u64;
+        r.y1 = r.y0 + (MAX_AREA / w.max(1)) as i32;
+    }
+    r
 }

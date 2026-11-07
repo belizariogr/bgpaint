@@ -207,7 +207,8 @@ impl PaintApp {
         if self.ui.open_menu.is_some() {
             self.ui.open_menu = None;
         } else if !self.active.is_idle() {
-            self.cancel_interaction();
+            // Escape finishes a shape, text box or selection (it deselects), as in Paint.
+            self.commit_interaction();
         } else if self.ui.fullscreen {
             self.ui.fullscreen = false;
         }

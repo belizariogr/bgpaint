@@ -42,9 +42,10 @@ pub struct DocState {
 }
 
 impl DocState {
-    /// Approximate memory held by this snapshot.
+    /// Memory held only by this snapshot: layers still shared with the live document (or other
+    /// snapshots) are not counted.
     pub fn byte_size(&self) -> usize {
-        self.layers.len() * self.width as usize * self.height as usize * 4
+        self.layers.iter().filter(|l| Arc::strong_count(&l.pixels) == 1).map(|l| l.pixels.data().len()).sum()
     }
 }
 

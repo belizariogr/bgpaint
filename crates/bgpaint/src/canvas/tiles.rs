@@ -62,7 +62,9 @@ impl Tiles {
             self.cols = self.width.div_ceil(TILE);
             self.rows = self.height.div_ceil(TILE);
             self.structure_version = doc.structure_version();
-            if self.textures.len() != (self.cols * self.rows) as usize || smooth != self.smooth {
+            // Recreate every texture: tile sizes change with the canvas size even when the tile
+            // count does not.
+            {
                 self.textures = vec![None; (self.cols * self.rows) as usize];
             }
             self.smooth = smooth;

@@ -220,6 +220,35 @@ pub fn resize(src: &Pixmap, width: u32, height: u32) -> Pixmap {
     out
 }
 
+/// Fast downscale for thumbnails: averages up to 4×4 samples per destination pixel.
+pub fn thumbnail(src: &Pixmap, width: u32, height: u32) -> Pixmap {
+    let (width, height) = (width.max(1), height.max(1));
+    let mut out = pixmap(width, height);
+    let (sw, sh) = (src.width() as f32, src.height() as f32);
+    let (fx, fy) = (sw / width as f32, sh / height as f32);
+    let n = 4usize;
+    let s = src.data();
+    let stride = src.width() as usize * 4;
+    for (i, px) in out.data_mut().chunks_exact_mut(4).enumerate() {
+        let (dx, dy) = ((i % width as usize) as f32, (i / width as usize) as f32);
+        let mut acc = [0u32; 4];
+        for sy in 0..n {
+            let y = (((dy + (sy as f32 + 0.5) / n as f32) * fy) as usize).min(src.height() as usize - 1);
+            for sx in 0..n {
+                let x = (((dx + (sx as f32 + 0.5) / n as f32) * fx) as usize).min(src.width() as usize - 1);
+                let o = y * stride + x * 4;
+                for c in 0..4 {
+                    acc[c] += u32::from(s[o + c]);
+                }
+            }
+        }
+        for c in 0..4 {
+            px[c] = (acc[c] / (n * n) as u32) as u8;
+        }
+    }
+    out
+}
+
 /// Clamps color channels to alpha so a filtered buffer stays a valid premultiplied image.
 pub fn fix_premultiplied(p: &mut Pixmap) {
     for px in p.data_mut().chunks_exact_mut(4) {

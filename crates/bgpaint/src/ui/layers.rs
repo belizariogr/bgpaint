@@ -43,7 +43,7 @@ impl Thumbnails {
         let ids: Vec<LayerId> = app_doc.layers().iter().map(|l| l.id).collect();
         self.textures.retain(|id, _| ids.contains(id));
         for layer in app_doc.layers() {
-            let small = raster::resize(&layer.pixels, w, h);
+            let small = raster::thumbnail(&layer.pixels, w, h);
             let img = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], small.data());
             match self.textures.get_mut(&layer.id) {
                 Some(t) => t.set(img, egui::TextureOptions::LINEAR),

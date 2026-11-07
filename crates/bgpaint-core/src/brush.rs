@@ -311,7 +311,7 @@ impl Stroke {
 
     /// Extends the stroke to `p`; returns the canvas area that changed.
     pub fn add_point(&mut self, p: Point) -> PixelRect {
-        let before = self.mask.bounds();
+        let from = self.last.unwrap_or(p);
         match self.last {
             None => {
                 self.stamp(p);
@@ -340,14 +340,10 @@ impl Stroke {
                 self.last = Some(p);
             }
         }
-        let after = self.mask.bounds();
-        if after == before {
-            // Airbrush dots may land inside the old bounds.
-            PixelRect::enclosing(p.x - self.size, p.y - self.size, p.x + self.size, p.y + self.size)
-                .clamp_to(self.mask.width(), self.mask.height())
-        } else {
-            after
-        }
+        // Only the segment just drawn changed (plus the brush radius and anti-aliasing).
+        let pad = self.size + 2.0;
+        PixelRect::enclosing(from.x.min(p.x) - pad, from.y.min(p.y) - pad, from.x.max(p.x) + pad, from.y.max(p.y) + pad)
+            .clamp_to(self.mask.width(), self.mask.height())
     }
 
     /// Called periodically while the pointer is held still (airbrush keeps spraying).

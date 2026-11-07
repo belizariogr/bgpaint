@@ -12,6 +12,5 @@ impl PaintApp {
     pub fn open_resize(&mut self) {}
     pub fn open_rotate_custom(&mut self) {}
     pub fn open_color_dialog(&mut self, _target: ColorTarget) {}
-    pub fn on_shape_style_changed(&mut self) {}
     pub fn tool_bars(&mut self, _ctx: &egui::Context) {}
 }

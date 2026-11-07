@@ -25,7 +25,8 @@ impl Change {
         }
     }
 
-    fn apply(&mut self, doc: &mut Document) {
+    /// Swaps the stored data with the document (undoes, or redoes, this change).
+    pub fn apply(&mut self, doc: &mut Document) {
         match self {
             Change::Pixels { layer, x, y, pixels } => {
                 doc.swap_pixels(*layer, *x, *y, pixels);
@@ -44,7 +45,14 @@ struct Entry {
     id: u64,
     label: &'static str,
     changes: Vec<Change>,
-    bytes: usize,
+}
+
+impl Entry {
+    /// Current memory cost. Document snapshots get more expensive as the live document diverges
+    /// from them (copy-on-write), so this is recomputed rather than cached.
+    fn bytes(&self) -> usize {
+        self.changes.iter().map(Change::byte_size).sum()
+    }
 }
 
 /// Linear undo history with a memory budget.
@@ -73,15 +81,14 @@ impl History {
         if changes.is_empty() {
             return;
         }
-        let bytes = changes.iter().map(Change::byte_size).sum();
         let id = self.next_id;
         self.next_id += 1;
         self.redo.clear();
-        self.undo.push(Entry { id, label, changes, bytes });
+        self.undo.push(Entry { id, label, changes });
         self.recount();
         while self.bytes > self.budget && self.undo.len() > 1 {
             let e = self.undo.remove(0);
-            self.bytes -= e.bytes;
+            self.bytes = self.bytes.saturating_sub(e.bytes());
         }
     }
 
@@ -93,7 +100,7 @@ impl History {
     }
 
     fn recount(&mut self) {
-        self.bytes = self.undo.iter().chain(&self.redo).map(|e| e.bytes).sum();
+        self.bytes = self.undo.iter().chain(&self.redo).map(Entry::bytes).sum();
     }
 
     pub fn can_undo(&self) -> bool {

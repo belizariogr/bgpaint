@@ -282,6 +282,7 @@ impl eframe::App for PaintApp {
         self.poll_async(&ctx);
         self.handle_close_request(&ctx);
         self.handle_dropped_files(&ctx);
+        self.selection_keys(&ctx);
         self.handle_shortcuts(&ctx);
 
         if self.ui.settings_open {

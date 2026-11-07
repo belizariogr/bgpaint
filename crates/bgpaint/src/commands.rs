@@ -108,6 +108,9 @@ pub fn shortcuts() -> Vec<(KeyboardShortcut, Command)> {
         (k(c, Key::R), Command::ToggleRulers),
         (k(c, Key::G), Command::ToggleGrid),
         (k(Modifiers::NONE, Key::F11), Command::ToggleFullscreen),
+        // More specific (Shift) shortcuts must come first: egui ignores extra Shift when matching.
+        (k(cs, Key::PageUp), Command::MoveLayer(usize::MAX, true)),
+        (k(cs, Key::PageDown), Command::MoveLayer(usize::MAX, false)),
         (k(c, Key::PageUp), Command::ZoomIn),
         (k(c, Key::PageDown), Command::ZoomOut),
         (k(c, Key::Num0), Command::Zoom100),
@@ -115,11 +118,9 @@ pub fn shortcuts() -> Vec<(KeyboardShortcut, Command)> {
         (k(c, Key::Plus), Command::GrowSize(true)),
         (k(c, Key::Equals), Command::GrowSize(true)),
         (k(c, Key::Minus), Command::GrowSize(false)),
-        (k(c, Key::H), Command::ToggleLayerVisible(usize::MAX)),
         (k(cs, Key::H), Command::ToggleBackground),
+        (k(c, Key::H), Command::ToggleLayerVisible(usize::MAX)),
         (k(cs, Key::B), Command::ChangeBackgroundColor),
-        (k(cs, Key::PageUp), Command::MoveLayer(usize::MAX, true)),
-        (k(cs, Key::PageDown), Command::MoveLayer(usize::MAX, false)),
         (k(cs, Key::Delete), Command::DeleteLayer(usize::MAX)),
         (k(Modifiers::NONE, Key::Escape), Command::Escape),
     ]

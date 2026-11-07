@@ -90,3 +90,4 @@ pub mod paint;
 pub mod select;
 pub mod shape;
 pub mod text;
+pub mod transform;
