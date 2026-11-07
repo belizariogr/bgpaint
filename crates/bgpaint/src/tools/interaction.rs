@@ -231,8 +231,10 @@ impl PaintApp {
         if let Some(p) = active.preview() {
             self.preview_dirty.add(p.bounds());
         }
-        if let Active::Select(op) = active {
-            self.cancel_selection(op);
+        match active {
+            Active::Select(op) => self.cancel_selection(op),
+            Active::Shape(op) => self.cancel_shape(op),
+            _ => {}
         }
     }
 

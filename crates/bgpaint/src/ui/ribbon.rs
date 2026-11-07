@@ -23,6 +23,62 @@ type ToolButton<'a> = (f32, f32, char, Option<char>, Tool, &'a str);
 
 /// Extra width of the Image group for the Undo/Redo column.
 const IMAGE_EXTRA: f32 = 36.0;
+/// Extra width of the Shapes group in vector mode, for the Pointer button.
+const POINTER_WIDTH: f32 = 40.0;
+/// Room kept at the right of the toolbar for the collapse chevron.
+const COLLAPSE_SPACE: f32 = 24.0;
+/// Width of the More button shown when some groups do not fit.
+const MORE_WIDTH: f32 = 44.0;
+
+/// The toolbar groups, left to right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RibbonGroup {
+    Selection,
+    Image,
+    Tools,
+    Brushes,
+    Shapes,
+    Colors,
+    Layers,
+    Vector,
+}
+
+impl RibbonGroup {
+    const ALL: [RibbonGroup; 8] = [
+        RibbonGroup::Selection,
+        RibbonGroup::Image,
+        RibbonGroup::Tools,
+        RibbonGroup::Brushes,
+        RibbonGroup::Shapes,
+        RibbonGroup::Colors,
+        RibbonGroup::Layers,
+        RibbonGroup::Vector,
+    ];
+
+    /// Where the group starts and ends in its drawing coordinates (the groups after Image were
+    /// drawn shifted by [`IMAGE_EXTRA`], which their coordinates keep).
+    fn span(self) -> (f32, f32) {
+        match self {
+            RibbonGroup::Selection => (0.0, 66.0),
+            RibbonGroup::Image => (66.0, 224.0 + IMAGE_EXTRA),
+            RibbonGroup::Tools => (224.0, 365.0),
+            RibbonGroup::Brushes => (365.0, 427.0),
+            RibbonGroup::Shapes => (427.0, 668.0),
+            RibbonGroup::Colors => (668.0, 1021.0),
+            RibbonGroup::Layers => (1021.0, 1099.0),
+            RibbonGroup::Vector => (1099.0, 1166.0),
+        }
+    }
+
+    fn start(self) -> f32 {
+        self.span().0
+    }
+
+    fn width(self, vector_mode: bool) -> f32 {
+        let (a, b) = self.span();
+        b - a + if self == RibbonGroup::Shapes && vector_mode { POINTER_WIDTH } else { 0.0 }
+    }
+}
 
 /// The 20 colors of Paint's palette (two rows).
 pub const PALETTE: [u32; 20] = [
@@ -90,21 +146,143 @@ impl PaintApp {
     }
 
     fn ribbon_contents(&mut self, ui: &mut egui::Ui, t: &Theme, r: Rect) {
+        // Scripted tests can pretend the window is narrower (a tiling window manager may not
+        // let them resize it).
+        #[cfg(feature = "automation")]
+        let r = match std::env::var("BGPAINT_RIBBON_WIDTH").ok().and_then(|v| v.parse::<f32>().ok()) {
+            Some(w) => Rect::from_min_size(r.min, vec2(w.min(r.width()), r.height())),
+            None => r,
+        };
         let ctx = ui.ctx().clone();
         let top = r.top();
-        let row1 = top + 23.0;
-        let row2 = top + 61.0;
         let label_y = top + 91.0;
-        let x0 = r.left();
+        let tr = self.tr;
+        let vector = self.doc.vector_mode();
+        let groups = RibbonGroup::ALL;
+        // Groups go left to right; when the window is too narrow, the ones that no longer fit
+        // move into a block that the More button opens below the toolbar.
+        let right = r.right() - COLLAPSE_SPACE;
+        let total: f32 = groups.iter().map(|g| g.width(vector)).sum();
+        let limit = if r.left() + total <= right { right } else { right - MORE_WIDTH };
+        let mut x = r.left();
+        let mut shown = 0;
+        for g in groups {
+            if x + g.width(vector) > limit {
+                break;
+            }
+            self.draw_ribbon_group(g, ui, t, x, top);
+            x += g.width(vector);
+            if shown + 1 < groups.len() {
+                widgets::vseparator(ui.painter(), t, x, top + 10.0, top + 98.0);
+            }
+            shown += 1;
+        }
+        let hidden = &groups[shown..];
+        if hidden.is_empty() {
+            self.ui.ribbon_overflow = false;
+        } else {
+            let more = Rect::from_min_size(pos2(x + 4.0, top + 8.0), vec2(MORE_WIDTH - 8.0, 76.0));
+            let resp = ui.interact(more, Id::unique("rb-more"), Sense::click());
+            let fill = if self.ui.ribbon_overflow { t.hover } else { widgets::state_fill(t, &resp, true) };
+            ui.painter().rect_filled(more, widgets::RADIUS, fill);
+            widgets::paint_icon(ui.painter(), more.center() - vec2(0.0, 6.0), ic::MORE, 20.0, t.text);
+            widgets::paint_chevron(ui.painter(), more.center() + vec2(0.0, 16.0), t.text, 12.0);
+            if resp.on_hover_text(tr.more_tools).clicked() {
+                self.ui.ribbon_overflow = !self.ui.ribbon_overflow;
+            }
+            if self.ui.ribbon_overflow {
+                self.ribbon_overflow_block(&ctx, t, hidden, r, more);
+            }
+        }
+
+        // Collapse chevron at the bottom right.
+        let cr = Rect::from_center_size(pos2(r.right() - 16.0, label_y), vec2(24.0, 20.0));
+        let resp = ui.interact(cr, Id::unique("rb-collapse"), Sense::click());
+        let fill = widgets::state_fill(t, &resp, true);
+        ui.painter().rect_filled(cr, widgets::RADIUS, fill);
+        let collapsed = self.ui.ribbon_collapsed || self.settings.auto_hide_toolbar;
+        widgets::paint_icon(ui.painter(), cr.center(), if collapsed { ic::CHEVRON_DOWN } else { ic::CHEVRON_UP }, 12.0, t.text);
+        if resp.on_hover_text(if collapsed { tr.expand_toolbar } else { tr.collapse_toolbar }).clicked() {
+            if self.settings.auto_hide_toolbar {
+                self.settings.auto_hide_toolbar = false;
+                self.ui.ribbon_collapsed = false;
+            } else {
+                self.ui.ribbon_collapsed = !self.ui.ribbon_collapsed;
+            }
+            self.ui.ribbon_revealed = false;
+        }
+    }
+
+    /// Draws one toolbar group whose left edge is at `x` (screen coordinates).
+    fn draw_ribbon_group(&mut self, g: RibbonGroup, ui: &mut egui::Ui, t: &Theme, x: f32, top: f32) {
+        // The groups are laid out in their own coordinates, starting at `g.start()`.
+        let x0 = x - g.start();
+        match g {
+            RibbonGroup::Selection => self.rb_selection(ui, t, x0, top),
+            RibbonGroup::Image => self.rb_image(ui, t, x0, top),
+            RibbonGroup::Tools => self.rb_tools(ui, t, x0, top),
+            RibbonGroup::Brushes => self.rb_brushes(ui, t, x0, top),
+            RibbonGroup::Shapes => self.rb_shapes(ui, t, x0, top),
+            RibbonGroup::Colors => self.rb_colors(ui, t, x0, top),
+            RibbonGroup::Layers => self.rb_layers(ui, t, x0, top),
+            RibbonGroup::Vector => self.rb_vector(ui, t, x0, top),
+        }
+    }
+
+    /// The groups that do not fit in the toolbar, in a block below it (wrapping into more rows
+    /// when the window is narrower still). A click anywhere else closes it.
+    fn ribbon_overflow_block(&mut self, ctx: &egui::Context, t: &Theme, hidden: &[RibbonGroup], ribbon: Rect, more: Rect) {
+        let vector = self.doc.vector_mode();
+        let pad = 6.0;
+        let max_row = (ribbon.width() - 16.0).max(200.0);
+        // Rows of groups, each no wider than the window.
+        let mut rows: Vec<Vec<RibbonGroup>> = vec![Vec::new()];
+        let mut row_w = 0.0;
+        for &g in hidden {
+            let w = g.width(vector);
+            if row_w > 0.0 && row_w + w > max_row {
+                rows.push(Vec::new());
+                row_w = 0.0;
+            }
+            rows.last_mut().unwrap().push(g);
+            row_w += w;
+        }
+        let width = rows.iter().map(|r| r.iter().map(|g| g.width(vector)).sum::<f32>()).fold(0.0, f32::max) + 2.0 * pad;
+        let height = rows.len() as f32 * RIBBON_HEIGHT + 2.0 * pad;
+        let left = (more.right() - width).clamp(ribbon.left() + 8.0, (ribbon.right() - 8.0 - width).max(ribbon.left() + 8.0));
+        let block = Rect::from_min_size(pos2(left, ribbon.bottom() + 2.0), vec2(width, height));
+        egui::Area::new(Id::unique("ribbon-overflow")).order(egui::Order::Middle).fixed_pos(block.min).show(ctx, |ui| {
+            ui.allocate_rect(Rect::from_min_size(block.min, block.size()), Sense::hover());
+            ui.painter().add(egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: t.canvas_shadow }.as_shape(block, 8));
+            ui.painter().rect(block, 8, t.ribbon_bg, EStroke::new(1.0, t.ribbon_border), egui::StrokeKind::Inside);
+            for (i, row) in rows.iter().enumerate() {
+                let top = block.top() + pad + i as f32 * RIBBON_HEIGHT;
+                let mut x = block.left() + pad;
+                for (j, &g) in row.iter().enumerate() {
+                    self.draw_ribbon_group(g, ui, t, x, top);
+                    x += g.width(vector);
+                    if j + 1 < row.len() {
+                        widgets::vseparator(ui.painter(), t, x, top + 10.0, top + 98.0);
+                    }
+                }
+            }
+        });
+        // Close on a click outside (a menu opened from the block takes its own clicks).
+        let clicked_outside =
+            ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !block.contains(p) && !more.contains(p)));
+        if clicked_outside && self.ui.open_menu.is_none() {
+            self.ui.ribbon_overflow = false;
+        }
+    }
+
+    fn rb_selection(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let label_y = top + 91.0;
         let at = |x: f32, y: f32| pos2(x0 + x, y);
-        let btn = |x: f32, y: f32| widgets::square(pos2(x0 + x, y), 32.0);
         let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
             widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
         };
-        let sep = |ui: &egui::Ui, x: f32| widgets::vseparator(ui.painter(), t, x0 + x, top + 10.0, top + 98.0);
         let tr = self.tr;
-        let shape_tool = self.tool == Tool::Shape;
-
         // --- Selection ---
         let sel_rect = Rect::from_center_size(at(32.0, top + 42.0), vec2(40.0, 64.0));
         let resp = ui.interact(sel_rect, Id::unique("rb-select"), Sense::click());
@@ -119,7 +297,13 @@ impl PaintApp {
         let glyph = if self.tools.select_mode == crate::tools::SelectMode::FreeForm { ic::LASSO } else { ic::SELECT };
         widgets::paint_icon(ui.painter(), at(32.0, top + 32.0), glyph, 24.0, t.text);
         widgets::paint_chevron(ui.painter(), at(32.0, top + 60.0), t.text, 12.0);
-        let resp = resp.on_hover_text(tr.group_selection);
+        // Outside vector mode the V key picks the Select tool.
+        let vector = self.doc.vector_mode();
+        if !vector {
+            widgets::paint_hotkey_hint(ui.painter(), sel_rect.shrink(2.0), "V", t.text_secondary);
+        }
+        let tip = if vector { tr.group_selection.to_owned() } else { self.tool_tooltip(&ctx, tr.group_selection, Some(&Command::Pointer)) };
+        let resp = resp.on_hover_text(tip);
         if resp.clicked() {
             if resp.interact_pointer_pos().is_some_and(|p| p.y > top + 48.0) || selected {
                 self.toggle_menu(MenuKind::Selection, sel_rect);
@@ -128,8 +312,19 @@ impl PaintApp {
             }
         }
         group_label(ui, 32.0, tr.group_selection);
-        sep(ui, 66.0);
+    }
 
+    fn rb_image(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let row1 = top + 23.0;
+        let row2 = top + 61.0;
+        let label_y = top + 91.0;
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let btn = |x: f32, y: f32| widgets::square(pos2(x0 + x, y), 32.0);
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
+        let tr = self.tr;
         // --- Image ---
         let has_sel = self.has_selection();
         if IconButton::new(ic::CROP)
@@ -196,17 +391,18 @@ impl PaintApp {
             }
         }
         group_label(ui, 163.0, tr.group_image);
-        sep(ui, 224.0 + IMAGE_EXTRA);
+    }
 
-        // Everything after the Image group moves right by the width of the Undo/Redo column.
-        let x0 = x0 + IMAGE_EXTRA;
-        let at = |x: f32, y: f32| pos2(x0 + x, y);
+    fn rb_tools(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let row1 = top + 23.0;
+        let row2 = top + 61.0;
+        let label_y = top + 91.0;
         let btn = |x: f32, y: f32| widgets::square(pos2(x0 + x, y), 32.0);
         let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
             widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
         };
-        let sep = |ui: &egui::Ui, x: f32| widgets::vseparator(ui.painter(), t, x0 + x, top + 10.0, top + 98.0);
-
+        let tr = self.tr;
         // --- Tools ---
         let accent = t.tool_icon_fill;
         let tools: [ToolButton; 6] = [
@@ -218,7 +414,9 @@ impl PaintApp {
             (333.0, row2, ic::ZOOM_IN, None, Tool::Magnifier, tr.magnifier),
         ];
         for (x, y, glyph, filled, tool, tip) in tools {
-            let mut b = IconButton::new(glyph).selected(self.tool == tool).tooltip(tip);
+            let cmd = Command::SetTool(tool);
+            let tip = self.tool_tooltip(&ctx, tip, Some(&cmd));
+            let mut b = IconButton::new(glyph).selected(self.tool == tool).tooltip(&tip);
             if let Some(f) = filled {
                 let c = match tool {
                     Tool::Pencil => Color32::from_rgb(0xF2, 0xB0, 0x3A),
@@ -227,13 +425,25 @@ impl PaintApp {
                 };
                 b = b.filled(f, c);
             }
-            if b.show(ui, t, btn(x, y), Id::unique(("rb-tool", tip))).clicked() {
-                self.execute(&ctx, Command::SetTool(tool));
+            let rect = btn(x, y);
+            if b.show(ui, t, rect, Id::unique(("rb-tool", x as i32, y as i32))).clicked() {
+                self.execute(&ctx, cmd.clone());
+            }
+            if let Some(key) = crate::commands::tool_hotkey(&cmd) {
+                widgets::paint_hotkey_hint(ui.painter(), rect, key, t.text_secondary);
             }
         }
         group_label(ui, 293.0, tr.group_tools);
-        sep(ui, 365.0);
+    }
 
+    fn rb_brushes(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let label_y = top + 91.0;
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
+        let tr = self.tr;
         // --- Brushes ---
         let br = Rect::from_center_size(at(396.0, top + 42.0), vec2(40.0, 56.0));
         let resp = ui.interact(br, Id::unique("rb-brushes"), Sense::click());
@@ -269,9 +479,39 @@ impl PaintApp {
             }
         }
         group_label(ui, 396.0, tr.group_brushes);
-        sep(ui, 427.0);
+    }
 
+    fn rb_shapes(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let row1 = top + 23.0;
+        let row2 = top + 61.0;
+        let label_y = top + 91.0;
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let tr = self.tr;
+        let shape_tool = self.tool == Tool::Shape;
         // --- Shapes ---
+        // In vector mode the Pointer comes first: it only picks up and moves objects.
+        let x0 = if self.doc.vector_mode() {
+            let pointer = self.vector_pointer();
+            // Same size as the Brushes button next to it.
+            let pr = Rect::from_center_size(at(449.0, top + 42.0), vec2(40.0, 56.0));
+            let tip = self.tool_tooltip(&ctx, tr.vector_pointer_tip, Some(&Command::Pointer));
+            if IconButton::new(' ').selected(pointer).tooltip(&tip).show(ui, t, pr, Id::unique("rb-pointer")).clicked() {
+                self.execute(&ctx, Command::SetVectorPointer);
+            }
+            // The arrow's own box in the 24 x 24 drawing is centered on the button.
+            let icon = Rect::from_min_size(pr.center() - vec2(8.7, 11.9), vec2(24.0, 24.0));
+            super::svg_icon::paint(&ctx, ui.painter(), icon, "pointer", super::svg_icon::POINTER);
+            widgets::paint_hotkey_hint(ui.painter(), pr.shrink(2.0), "V", t.text_secondary);
+            x0 + POINTER_WIDTH
+        } else {
+            x0
+        };
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let btn = |x: f32, y: f32| widgets::square(pos2(x0 + x, y), 32.0);
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
         self.shape_gallery(ui, t, Rect::from_min_size(at(436.0, top + 4.0), vec2(171.0, 80.0)));
         let outline = btn(622.0, row1);
         if IconButton::new(ic::OUTLINE).enabled(shape_tool).tooltip(tr.outline).show(ui, t, outline, Id::unique("rb-outline")).clicked() {
@@ -293,13 +533,27 @@ impl PaintApp {
         }
         // The outline width comes from the size slider beside the canvas.
         group_label(ui, 547.0, tr.group_shapes);
-        sep(ui, 668.0);
+    }
 
+    fn rb_colors(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let label_y = top + 91.0;
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
+        let tr = self.tr;
         // --- Colors ---
         self.color_group(ui, t, x0 + 668.0, top);
         group_label(ui, 830.0, tr.group_colors);
-        sep(ui, 1021.0);
+    }
 
+    fn rb_layers(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let label_y = top + 91.0;
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
+        let tr = self.tr;
         // --- Layers ---
         let lr = Rect::from_center_size(at(1060.0, top + 42.0), vec2(40.0, 40.0));
         if IconButton::new(ic::LAYERS)
@@ -312,23 +566,28 @@ impl PaintApp {
             self.execute(&ctx, Command::ToggleLayersPanel);
         }
         group_label(ui, 1060.0, tr.group_layers);
+    }
 
-        // Collapse chevron at the bottom right.
-        let cr = Rect::from_center_size(pos2(r.right() - 16.0, label_y), vec2(24.0, 20.0));
-        let resp = ui.interact(cr, Id::unique("rb-collapse"), Sense::click());
-        let fill = widgets::state_fill(t, &resp, true);
-        ui.painter().rect_filled(cr, widgets::RADIUS, fill);
-        let collapsed = self.ui.ribbon_collapsed || self.settings.auto_hide_toolbar;
-        widgets::paint_icon(ui.painter(), cr.center(), if collapsed { ic::CHEVRON_DOWN } else { ic::CHEVRON_UP }, 12.0, t.text);
-        if resp.on_hover_text(if collapsed { tr.expand_toolbar } else { tr.collapse_toolbar }).clicked() {
-            if self.settings.auto_hide_toolbar {
-                self.settings.auto_hide_toolbar = false;
-                self.ui.ribbon_collapsed = false;
-            } else {
-                self.ui.ribbon_collapsed = !self.ui.ribbon_collapsed;
-            }
-            self.ui.ribbon_revealed = false;
+    fn rb_vector(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
+        let ctx = ui.ctx().clone();
+        let label_y = top + 91.0;
+        let at = |x: f32, y: f32| pos2(x0 + x, y);
+        let group_label = |ui: &egui::Ui, cx: f32, text: &str| {
+            widgets::label(ui.painter(), pos2(x0 + cx, label_y), Align2::CENTER_CENTER, text, 12.0, t.text_secondary);
+        };
+        let tr = self.tr;
+        // --- Vector ---
+        let vr = Rect::from_center_size(at(1138.0, top + 42.0), vec2(40.0, 40.0));
+        if IconButton::new(' ')
+            .selected(self.doc.vector_mode())
+            .tooltip(tr.vector_mode_tip)
+            .show(ui, t, vr, Id::unique("rb-vector"))
+            .clicked()
+        {
+            self.execute(&ctx, Command::ToggleVectorMode);
         }
+        paint_vector_icon(ui.painter(), vr.center(), t.text);
+        group_label(ui, 1138.0, tr.group_vector);
     }
 
     fn color_group(&mut self, ui: &mut egui::Ui, t: &Theme, x0: f32, top: f32) {
@@ -455,14 +714,24 @@ impl PaintApp {
             let c = origin + vec2(col as f32 * cell + cell / 2.0, (row - first_row) as f32 * cell + cell / 2.0);
             let r = Rect::from_center_size(c, vec2(cell, cell));
             let resp = ui.interact(r, Id::unique(("shape", i)), Sense::click());
-            let selected = self.tool == Tool::Shape && self.tools.shape == *kind;
+            let selected = self.tool == Tool::Shape && self.tools.shape == *kind && !self.vector_pointer();
             if selected {
                 painter.rect(r.shrink(0.5), widgets::RADIUS, t.hover, EStroke::new(1.0, t.selected_border), egui::StrokeKind::Inside);
             } else if resp.hovered() {
                 painter.rect_filled(r, widgets::RADIUS, t.hover);
             }
             paint_shape_icon(&painter, *kind, r.shrink(5.0), t.text);
-            if resp.on_hover_text(self.shape_name(*kind)).clicked() {
+            let cmd = Command::SetShape(*kind);
+            if let Some(key) = crate::commands::tool_hotkey(&cmd) {
+                painter.text(
+                    r.right_bottom() + vec2(0.5, 1.0),
+                    Align2::RIGHT_BOTTOM,
+                    key,
+                    egui::FontId::proportional(7.0),
+                    t.text_secondary,
+                );
+            }
+            if resp.on_hover_text(self.tool_tooltip(&ctx, self.shape_name(*kind), Some(&cmd))).clicked() {
                 self.execute(&ctx, Command::SetShape(*kind));
             }
         }
@@ -546,14 +815,17 @@ impl PaintApp {
             ShapeKind::CloudCallout => tr.shape_cloud_callout,
             ShapeKind::Heart => tr.shape_heart,
             ShapeKind::Lightning => tr.shape_lightning,
+            ShapeKind::CurvedArrow => tr.shape_curved_arrow,
+            ShapeKind::Moon => tr.shape_moon,
         }
     }
 
     fn brush_preview(&self, ctx: &egui::Context, kind: BrushKind) -> Preview {
         let color = preview_color(&self.theme);
-        cached_preview(ctx, ("brush", format!("{kind:?}"), color), || {
-            let (w, h) = (92u32, 26u32);
-            let size = match kind {
+        cached_preview(ctx, ("brush", format!("{kind:?}"), color), |k| {
+            // 92 x 26 points, drawn at the display's scale.
+            let (w, h) = ((92.0 * k).round() as u32, (26.0 * k).round() as u32);
+            let size = k * match kind {
                 BrushKind::CalligraphyPen | BrushKind::CalligraphyBrush => 9.0,
                 BrushKind::NaturalPencil => 5.0,
                 BrushKind::Airbrush => 7.0,
@@ -561,9 +833,9 @@ impl PaintApp {
             };
             let mut s = Stroke::new(kind, size, w, h, 7);
             for i in 0..=60 {
-                let x = 6.0 + i as f32 * (w as f32 - 12.0) / 60.0;
-                let y = h as f32 / 2.0 - (x / w as f32 * std::f32::consts::TAU).sin() * 6.0;
-                s.add_point(Point::new(x, y));
+                let x = 6.0 + i as f32 * 80.0 / 60.0;
+                let y = 13.0 - (x / 92.0 * std::f32::consts::TAU).sin() * 6.0;
+                s.add_point(Point::new(x * k, y * k));
                 if kind == BrushKind::Airbrush {
                     s.hold();
                 }
@@ -577,19 +849,20 @@ impl PaintApp {
 
     pub fn texture_preview(&self, ctx: &egui::Context, tex: Texture) -> Preview {
         let color = preview_color(&self.theme);
-        cached_preview(ctx, ("tex", format!("{tex:?}"), color), || {
-            let (w, h) = (72u32, 22u32);
+        cached_preview(ctx, ("tex", format!("{tex:?}"), color), |k| {
+            // 72 x 22 points, drawn at the display's scale.
+            let (w, h) = ((72.0 * k).round() as u32, (22.0 * k).round() as u32);
             let paint = shapes::ShapePaint {
                 outline: shapes::ShapeStyle::Textured(tex),
                 fill: shapes::ShapeStyle::None,
-                width: 8.0,
+                width: 8.0 * k,
                 outline_color: color,
                 fill_color: color,
                 opacity: 1.0,
             };
             let mut pb = bgpaint_core::tiny_skia::PathBuilder::new();
-            pb.move_to(4.0, 15.0);
-            pb.cubic_to(24.0, 2.0, 44.0, 22.0, 68.0, 8.0);
+            pb.move_to(4.0 * k, 15.0 * k);
+            pb.cubic_to(24.0 * k, 2.0 * k, 44.0 * k, 22.0 * k, 68.0 * k, 8.0 * k);
             let mut p = raster::pixmap(w, h);
             if let Some(path) = pb.finish()
                 && let Some(s) = shapes::rasterize(&path, &paint, false, w, h)
@@ -605,21 +878,25 @@ fn preview_color(t: &Theme) -> Color {
     if t.dark { Color::rgb(0xE6, 0xE6, 0xE6) } else { Color::rgb(0x40, 0x40, 0x40) }
 }
 
+/// A menu preview, rendered by `make(scale)` at the display's scale (`scale` physical pixels
+/// per point) so it stays sharp at any DPI, and cached per scale.
 fn cached_preview(
     ctx: &egui::Context,
     key: (&'static str, String, Color),
-    make: impl FnOnce() -> bgpaint_core::tiny_skia::Pixmap,
+    make: impl FnOnce(f32) -> bgpaint_core::tiny_skia::Pixmap,
 ) -> Preview {
-    let id = Id::unique(("preview", key.0, key.1, key.2.r, key.2.g, key.2.b));
+    let ppp = ctx.pixels_per_point();
+    let id = Id::unique(("preview", key.0, key.1, key.2.r, key.2.g, key.2.b, ppp.to_bits()));
     let tex: Option<egui::TextureHandle> = ctx.data(|d| d.get_temp(id));
     let tex = tex.unwrap_or_else(|| {
-        let p = make();
+        let p = make(ppp);
         let img = egui::ColorImage::from_rgba_premultiplied([p.width() as usize, p.height() as usize], p.data());
         let tex = ctx.load_texture(format!("preview-{id:?}"), img, egui::TextureOptions::LINEAR);
         ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
         tex
     });
-    let size = tex.size_vec2();
+    // Shown at its size in points.
+    let size = tex.size_vec2() / ppp;
     Preview::Texture(tex.id(), size)
 }
 
@@ -677,6 +954,21 @@ pub fn paint_shape_icon(p: &egui::Painter, kind: ShapeKind, r: Rect, color: Colo
                 .collect();
             p.add(egui::Shape::line(pts, stroke));
         }
+        ShapeKind::CurvedArrow => {
+            // An arch ending in a small arrowhead that points down.
+            let pts: Vec<Pos2> = (0..=16)
+                .map(|i| {
+                    let u = i as f32 / 16.0;
+                    pt(0.05 + 0.75 * u, 0.95 - (u * std::f32::consts::PI).sin() * 0.9)
+                })
+                .collect();
+            let (tip, before) = (pts[16], pts[15]);
+            let dir = (tip - before).normalized();
+            let side = egui::vec2(-dir.y, dir.x);
+            let back = tip - dir * r.width() * 0.32;
+            p.add(egui::Shape::line(pts, stroke));
+            p.add(egui::Shape::line(vec![back + side * r.width() * 0.2, tip, back - side * r.width() * 0.2], stroke));
+        }
         ShapeKind::Polygon => {
             let pts = vec![pt(0.15, 1.0), pt(0.35, 0.0), pt(0.95, 0.0), pt(0.75, 0.55), pt(1.0, 1.0)];
             closed_outline(p, pts, stroke);
@@ -685,10 +977,28 @@ pub fn paint_shape_icon(p: &egui::Painter, kind: ShapeKind, r: Rect, color: Colo
             let rect = RectF::from_xywh(r.left(), r.top(), r.width(), r.height());
             if let Some(path) = shapes::box_shape_path(k, &rect) {
                 for sub in flatten_path(&path) {
-                    closed_outline(p, sub, stroke);
+                    if k.is_open() {
+                        p.add(egui::Shape::line(sub, stroke));
+                    } else {
+                        closed_outline(p, sub, stroke);
+                    }
                 }
             }
         }
+    }
+}
+
+/// The Vector button's icon, drawn because the icon font has none: a curve between two nodes,
+/// one showing its tangent handle (the usual sign for vector drawing).
+fn paint_vector_icon(p: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = EStroke::new(1.3, color);
+    let (a, b) = (c + vec2(-7.0, 6.0), c + vec2(7.0, -6.0));
+    let (c1, c2) = (c + vec2(-6.0, -8.0), c + vec2(6.0, 8.0));
+    p.add(egui::epaint::CubicBezierShape::from_points_stroke([a, c1, c2, b], false, Color32::TRANSPARENT, stroke));
+    p.line_segment([a, c1], EStroke::new(1.0, color.gamma_multiply(0.7)));
+    p.circle_filled(c1, 1.8, color);
+    for n in [a, b] {
+        p.rect_filled(Rect::from_center_size(n, vec2(4.5, 4.5)), 0, color);
     }
 }
 

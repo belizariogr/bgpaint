@@ -142,7 +142,7 @@ pub(crate) fn render_floating(pixels: &Pixmap, geom: &BoxGeom, canvas: (u32, u32
             .post_translate(-bounds.x0 as f32, -bounds.y0 as f32);
         raster::draw_transformed(&mut out, pixels, t, true);
     }
-    Some(RasterShape { pixmap: out, x: bounds.x0, y: bounds.y0 })
+    Some(RasterShape { pixmap: out, x: bounds.x0, y: bounds.y0, clipped: false })
 }
 
 impl PaintApp {
@@ -333,7 +333,8 @@ impl PaintApp {
         egui::CursorIcon::Crosshair
     }
 
-    /// Selected pixels of the active layer (or the floating content).
+    /// Selected pixels of the active layer as it looks, vector objects included (or the floating
+    /// content).
     fn selected_pixels(&self) -> Option<Pixmap> {
         let Active::Select(op) = &self.active else { return None };
         if let Some(f) = &op.floating {
@@ -342,7 +343,7 @@ impl PaintApp {
                 None => f.pixels.clone(),
             });
         }
-        op.mask.as_ref()?.extract(&self.doc.active_layer().pixels)
+        op.mask.as_ref()?.extract(&self.doc.layer_image(self.doc.active_index()))
     }
 
     pub fn copy(&mut self) {
@@ -429,9 +430,18 @@ impl PaintApp {
     }
 
     pub fn delete_selection(&mut self) {
-        // A shape that is still editable is simply discarded.
+        // A shape that is still editable is discarded (a picked-up vector object is deleted).
+        // Only taken out when it is a shape: anything else (a selection) stays for below.
+        // A marked arrow point goes alone.
+        if let Active::Shape(op) = &mut self.active
+            && op.delete_selected_point()
+        {
+            return;
+        }
         if matches!(self.active, Active::Shape(_)) {
-            self.cancel_interaction();
+            if let Active::Shape(op) = std::mem::take(&mut self.active) {
+                self.delete_shape(op);
+            }
             return;
         }
         if !matches!(self.active, Active::Select(_)) {
@@ -474,6 +484,14 @@ impl PaintApp {
         }
         let before = self.doc.snapshot();
         let keep_shape = mask.filter(|m| !m.is_rect() && m.rect == rect);
+        // A rectangular crop only moves the content: vector objects move along and stay editable.
+        if keep_shape.is_none() {
+            self.doc.map_layers_shifted(-rect.x0, -rect.y0, |p| {
+                raster::copy_region(p, rect).unwrap_or_else(|| raster::pixmap(rect.width(), rect.height()))
+            });
+            self.history.push("crop", vec![Change::document(before)]);
+            return;
+        }
         self.doc.map_layers(|p| {
             let mut out = raster::copy_region(p, rect).unwrap_or_else(|| raster::pixmap(rect.width(), rect.height()));
             if let Some(m) = &keep_shape {

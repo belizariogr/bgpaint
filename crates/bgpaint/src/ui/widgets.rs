@@ -115,6 +115,11 @@ pub fn label(painter: &egui::Painter, pos: Pos2, anchor: Align2, text: &str, siz
     painter.text(pos, anchor, text, FontId::proportional(size), color)
 }
 
+/// The single-key shortcut of a tool, small in the bottom right corner of its button.
+pub fn paint_hotkey_hint(painter: &egui::Painter, button: Rect, key: &str, color: Color32) {
+    painter.text(button.right_bottom() + egui::vec2(-2.0, 0.0), Align2::RIGHT_BOTTOM, key, FontId::proportional(8.0), color);
+}
+
 pub fn text_width(ui: &Ui, text: &str, font: FontId) -> f32 {
     ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x)
 }

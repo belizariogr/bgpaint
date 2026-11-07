@@ -34,6 +34,7 @@ impl PaintApp {
             Command::Undo => {
                 if self.active.is_idle() {
                     self.history.undo(&mut self.doc);
+                    self.remember_vector_mode();
                 } else {
                     // Undo first discards the operation in progress, like Paint.
                     self.cancel_interaction();
@@ -42,6 +43,7 @@ impl PaintApp {
             Command::Redo => {
                 self.commit_interaction();
                 self.history.redo(&mut self.doc);
+                self.remember_vector_mode();
             }
             Command::Cut => self.cut(),
             Command::Copy => self.copy(),
@@ -68,8 +70,23 @@ impl PaintApp {
                 self.set_tool(Tool::Brush);
             }
             Command::SetShape(s) => {
+                // Picking a tool (even another shape) finishes the shape being edited.
+                self.commit_interaction();
                 self.tools.shape = s;
+                self.tools.vector_pointer = false;
                 self.set_tool(Tool::Shape);
+            }
+            Command::Pointer => {
+                if self.doc.vector_mode() {
+                    self.execute(ctx, Command::SetVectorPointer);
+                } else {
+                    self.execute(ctx, Command::SetTool(Tool::Select));
+                }
+            }
+            Command::SetVectorPointer => {
+                self.commit_interaction();
+                self.set_tool(Tool::Shape);
+                self.tools.vector_pointer = true;
             }
             Command::SetOutline(s) => {
                 self.tools.outline = s;
@@ -114,6 +131,13 @@ impl PaintApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.ui.fullscreen));
             }
             Command::ToggleThumbnail => self.ui.thumbnail = !self.ui.thumbnail,
+            Command::ToggleVectorMode => {
+                self.layer_op("vector mode", |d| {
+                    let on = !d.vector_mode();
+                    d.set_vector_mode(on)
+                });
+                self.remember_vector_mode();
+            }
             Command::ToggleLayersPanel => {
                 self.settings.show_layers = !self.settings.show_layers;
                 self.settings.save();
@@ -183,6 +207,15 @@ impl PaintApp {
         if i == usize::MAX { self.doc.active_index() } else { i }
     }
 
+    /// Saves the document's vector mode as the one new documents and the next start use, when
+    /// it changed (turned on or off, or by undoing or redoing that).
+    fn remember_vector_mode(&mut self) {
+        if self.settings.vector_mode != self.doc.vector_mode() {
+            self.settings.vector_mode = self.doc.vector_mode();
+            self.settings.save();
+        }
+    }
+
     /// Runs a structural layer operation with undo support.
     fn layer_op(&mut self, label: &'static str, f: impl FnOnce(&mut bgpaint_core::document::Document) -> bool) {
         self.commit_interaction();
@@ -215,8 +248,13 @@ impl PaintApp {
         if self.ui.open_menu.is_some() {
             self.ui.open_menu = None;
         } else if !self.active.is_idle() {
-            // Escape finishes a shape, text box or selection (it deselects), as in Paint.
+            // Escape finishes a shape, text box or selection (it deselects), as in Paint. A
+            // finished shape hands over to the vector Pointer.
+            let shape = matches!(self.active, crate::tools::interaction::Active::Shape(_));
             self.commit_interaction();
+            if shape && self.doc.vector_mode() {
+                self.tools.vector_pointer = true;
+            }
         } else if self.ui.fullscreen {
             self.ui.fullscreen = false;
         }

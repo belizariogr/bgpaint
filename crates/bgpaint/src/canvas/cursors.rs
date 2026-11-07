@@ -3,7 +3,6 @@
 //! stay sharp at any DPI. `{PAINT}` in a file is replaced with the active color.
 
 use bgpaint_core::color::Color;
-use bgpaint_core::tiny_skia::{Pixmap, Transform};
 use egui::{Color32, Id, Pos2, Rect, TextureHandle, TextureOptions, Vec2, pos2, vec2};
 
 /// Side of the cursor box in points, equal to the SVGs' viewBox (a 20 unit drawing area with a
@@ -44,13 +43,7 @@ struct Cache(Vec<(ToolCursor, u32, [u8; 3], TextureHandle)>);
 fn rasterize(c: ToolCursor, px: u32, paint: [u8; 3]) -> Option<egui::ColorImage> {
     let [r, g, b] = paint;
     let svg = c.svg().replace("{PAINT}", &format!("#{r:02x}{g:02x}{b:02x}"));
-    let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).ok()?;
-    let mut pixmap = Pixmap::new(px, px)?;
-    let scale = px as f32 / tree.size().width();
-    resvg::render(&tree, Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    // tiny-skia stores premultiplied RGBA, which is what egui's Color32 holds too.
-    let pixels = pixmap.pixels().iter().map(|p| Color32::from_rgba_premultiplied(p.red(), p.green(), p.blue(), p.alpha())).collect();
-    Some(egui::ColorImage::new([px as usize, px as usize], pixels))
+    crate::ui::svg_icon::rasterize(&svg, px, px)
 }
 
 /// Paints `c` with its hotspot at `pos`.

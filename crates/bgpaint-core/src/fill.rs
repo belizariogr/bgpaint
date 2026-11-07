@@ -83,6 +83,10 @@ impl Flood {
                         }
                     }
                     if far < 1.0 {
+                        // Still the seed color here and all around: the outline that bounds the
+                        // area is not in this pixmap (it was found on a version with vector
+                        // objects on top), so the pixel under that outline gets the full color.
+                        fringe.push((x, y, color.premultiplied()));
                         continue;
                     }
                     // Seed share of this pixel: its projection on the line -> seed segment.
@@ -267,6 +271,22 @@ mod tests {
         assert_eq!(px(5, 0), &[255, 0, 0, 255]);
         assert_eq!(px(0, 1), &[255, 255, 255, 255]);
         assert_eq!(px(3, 4), &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn paint_fills_under_an_outline_found_elsewhere() {
+        // The region comes from an image with an outline (a vector object drawn on top); the
+        // layer itself is still blank under that outline's soft edge.
+        let mut seen = raster::pixmap(5, 1);
+        raster::fill_region(&mut seen, PixelRect::new(3, 0, 4, 1), Color::rgba(0, 0, 0, 100));
+        raster::fill_region(&mut seen, PixelRect::new(4, 0, 5, 1), Color::BLACK);
+        let flood = Flood::at(&seen, 0, 0, 0).unwrap();
+        let mut layer = raster::pixmap(5, 1);
+        flood.paint(&mut layer, Color::rgb(255, 0, 0));
+        let d = layer.data();
+        assert_eq!(&d[8..12], &[255, 0, 0, 255]);
+        assert_eq!(&d[12..16], &[255, 0, 0, 255], "the soft edge pixel is filled under the outline");
+        assert_eq!(&d[16..20], &[0, 0, 0, 0]);
     }
 
     #[test]

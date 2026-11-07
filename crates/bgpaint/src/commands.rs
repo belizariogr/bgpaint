@@ -71,6 +71,12 @@ pub enum Command {
     ToggleFullscreen,
     ToggleThumbnail,
     ToggleLayersPanel,
+    /// Vector mode on/off for the document (off draws the vector objects into their layers).
+    ToggleVectorMode,
+    /// The vector Pointer: the Shapes tool picks up and moves objects but draws nothing.
+    SetVectorPointer,
+    /// The V key: the vector Pointer in vector mode, the Select tool otherwise.
+    Pointer,
     OpenSettings,
     /// From the macOS app menu; elsewhere the button in Settings checks.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -136,6 +142,33 @@ pub fn shortcuts() -> Vec<(KeyboardShortcut, Command)> {
     ]
 }
 
+/// Single-key tool shortcuts (as in common drawing apps). They are left alone while a text box is
+/// being typed in, so its letters never switch tools.
+pub fn tool_hotkeys() -> Vec<(Key, Command)> {
+    vec![
+        (Key::V, Command::Pointer),
+        (Key::R, Command::SetShape(ShapeKind::RoundedRectangle)),
+        (Key::D, Command::SetShape(ShapeKind::Diamond)),
+        (Key::O, Command::SetShape(ShapeKind::Oval)),
+        (Key::A, Command::SetShape(ShapeKind::CurvedArrow)),
+        (Key::L, Command::SetShape(ShapeKind::Line)),
+        (Key::P, Command::SetTool(Tool::Pencil)),
+        (Key::T, Command::SetTool(Tool::Text)),
+        (Key::E, Command::SetTool(Tool::Eraser)),
+    ]
+}
+
+/// The single key that picks `cmd`, as shown on its button ("R" for the rectangle).
+pub fn tool_hotkey(cmd: &Command) -> Option<&'static str> {
+    let commands = |c: &Command| match c {
+        // The Pointer button runs SetVectorPointer; the key is the same.
+        Command::SetVectorPointer => Command::Pointer,
+        other => other.clone(),
+    };
+    let cmd = commands(cmd);
+    tool_hotkeys().into_iter().find(|(_, c)| *c == cmd).map(|(k, _)| k.name())
+}
+
 /// The shortcut label shown in menus for a command, formatted for the platform.
 pub fn shortcut_label(ctx: &egui::Context, cmd: &Command) -> Option<String> {
     let fixed = match cmd {
@@ -147,6 +180,8 @@ pub fn shortcut_label(ctx: &egui::Context, cmd: &Command) -> Option<String> {
         Command::Redo => Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)),
         _ => None,
     };
-    let sc = fixed.or_else(|| shortcuts().into_iter().find(|(_, c)| c == cmd).map(|(s, _)| s))?;
+    let Some(sc) = fixed.or_else(|| shortcuts().into_iter().find(|(_, c)| c == cmd).map(|(s, _)| s)) else {
+        return tool_hotkey(cmd).map(str::to_owned);
+    };
     Some(ctx.format_shortcut(&sc))
 }
