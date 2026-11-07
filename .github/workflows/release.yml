@@ -1,0 +1,363 @@
+# Builds installable packages with cargo-packager (config:
+# [package.metadata.packager] in crates/bgpaint/Cargo.toml) and publishes them as
+# a GitHub Release: from a manual run (which bumps the version and creates the
+# tag itself) or from a pushed `v*` tag (draft). Signing/notarization run only
+# when their secrets exist.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Packaging changes are proven before a tag needs them. Publishing stays
+  # tag-only (see the `release` job).
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - crates/bgpaint/assets/icon*
+      - crates/bgpaint/Cargo.toml
+      - crates/bgpaint/packaging/**
+      - rust-toolchain.toml
+      - script/bundle-linux
+      - script/bundle-macos-dmg
+      - script/install.sh
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Create the tag and the GitHub Release (off = only build the packages)
+        type: boolean
+        default: true
+      bump:
+        description: Part of the Cargo.toml version to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Exact version instead of a bump, e.g. 1.0.0-beta.1 (blank = bump)
+        type: string
+        default: ""
+      draft:
+        description: Leave the release as a draft
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Two releases at once would race on the version bump and the tag.
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PACKAGER_VERSION: 0.11.8
+  # Writes the macOS installer window (.DS_Store) without Finder.
+  DMGBUILD_VERSION: 1.6.7
+
+jobs:
+  # Decides what is built and whether it is published. A manual publishing run
+  # commits the version bump here, so every package carries the new version and
+  # the tag points at the commit that was built.
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+      publish: ${{ steps.plan.outputs.publish }}
+      draft: ${{ steps.plan.outputs.draft }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+
+      - name: Plan the release
+        id: plan
+        env:
+          PUBLISH_INPUT: ${{ inputs.publish }}
+          BUMP_INPUT: ${{ inputs.bump }}
+          VERSION_INPUT: ${{ inputs.version }}
+          DRAFT_INPUT: ${{ inputs.draft }}
+        run: |
+          sha="$GITHUB_SHA" tag="" publish=false draft=true
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            # Only `v*` tags trigger a push run.
+            tag="$GITHUB_REF_NAME" publish=true
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$PUBLISH_INPUT" = true ]; then
+            if [ "$GITHUB_REF_TYPE" != branch ]; then
+              echo "::error::Publish from a branch (the version bump is committed to it)."
+              exit 1
+            fi
+            current=$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+            version="${VERSION_INPUT#v}"
+            if [ -z "$version" ]; then
+              # A prerelease's patch bump is its final version (1.0.0-beta.1 -> 1.0.0).
+              IFS=. read -r major minor patch <<<"${current%%-*}"
+              case "$BUMP_INPUT" in
+                major) version="$((major + 1)).0.0" ;;
+                minor) version="$major.$((minor + 1)).0" ;;
+                *) if [ "$current" != "${current%%-*}" ]; then version="${current%%-*}"
+                   else version="$major.$minor.$((patch + 1))"; fi ;;
+              esac
+            fi
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::\"$version\" is not a version like 1.2.3 or 1.2.3-beta.1."
+              exit 1
+            fi
+            tag="v$version"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "::error::$tag already exists. Pick a new version."
+              exit 1
+            fi
+            if [ "$version" != "$current" ]; then
+              sed -i '/^\[workspace\.package\]/,/^\[/ s/^version = ".*"$/version = "'"$version"'"/' Cargo.toml
+              # Rewrites the workspace crates' entries in Cargo.lock.
+              cargo metadata --format-version 1 >/dev/null
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock
+              git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+              sha=$(git rev-parse HEAD)
+            fi
+            publish=true draft="$DRAFT_INPUT"
+          fi
+          prerelease=false
+          if [[ "$tag" == *-* ]]; then prerelease=true; fi
+          {
+            echo "sha=$sha"
+            echo "tag=$tag"
+            echo "publish=$publish"
+            echo "draft=$draft"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $sha${tag:+ for $tag} (publish: $publish, draft: $draft, prerelease: $prerelease)"
+
+  package:
+    name: Package (${{ matrix.name }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            formats: deb,appimage,pacman
+          - name: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+            # The .dmg comes from script/bundle-macos-dmg (BGDesk's window).
+            formats: app
+          # Cross-compiled on Apple silicon: no dependence on Intel runner images.
+          - name: macos-x86_64
+            os: macos-15
+            target: x86_64-apple-darwin
+            formats: app
+    env:
+      # Booleans only: the secrets themselves are passed to the single step
+      # that needs them, never to the whole job (build scripts run here).
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Same headers as ci.yml, plus what the AppImage bundler runs.
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev \
+            libfuse2 file
+
+      - name: macOS build environment
+        if: runner.os == 'macOS'
+        run: |
+          # Matches minimum-system-version in the packager config.
+          echo "MACOSX_DEPLOYMENT_TARGET=10.15.7" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          if [ -n "${{ matrix.target }}" ]; then
+            rustup target add "${{ matrix.target }}"
+            # The packager's before-packaging `cargo build` honors this too.
+            echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version "$CARGO_PACKAGER_VERSION"
+
+      - name: Install dmgbuild
+        if: runner.os == 'macOS'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet "dmgbuild==$DMGBUILD_VERSION"
+          echo "DMGBUILD=$RUNNER_TEMP/dmgbuild/bin/dmgbuild" >> "$GITHUB_ENV"
+
+      # Built before any signing secret is in the environment; the packager's
+      # own before-packaging build is then a no-op.
+      - name: Build release binary
+        run: cargo build --release -p bgpaint
+
+      # A keychain of our own instead of the packager's: the packager deletes
+      # its keychain right after signing the .app, and the .dmg is signed later.
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/bgpaint-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          p12="$RUNNER_TEMP/bgpaint-signing.p12"
+          trap 'rm -f "$p12"' EXIT
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046 # the list is one quoted path per line
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$keychain" | grep -qF "\"$APPLE_SIGNING_IDENTITY\"" \
+            || { echo "::error::APPLE_SIGNING_IDENTITY is not in APPLE_CERTIFICATE"; exit 1; }
+          echo "APPLE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          perl -pi -e 's/^(\[package\.metadata\.packager\.macos\])$/$1\nsigning-identity = "$ENV{APPLE_SIGNING_IDENTITY}"/' crates/bgpaint/Cargo.toml
+
+      - name: Package
+        env:
+          # macOS: cargo-packager only signs the .app with the imported
+          # identity; script/bundle-macos-dmg notarizes and staples the .app and
+          # then the .dmg when the notarization vars exist (Apple ID +
+          # app-specific password + team, or an App Store Connect API key).
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_PRIVATE_KEY || '' }}
+        run: |
+          # Empty values would be read as "set"; drop them so unsigned builds stay unsigned.
+          for var in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+                     APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
+            [ -n "${!var}" ] || unset "$var"
+          done
+          # notarytool reads the App Store Connect key from a .p8 file.
+          if [ -n "${APPLE_API_PRIVATE_KEY:-}" ]; then
+            export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$APPLE_API_KEY_PATH"
+            trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
+            unset APPLE_API_PRIVATE_KEY
+          fi
+
+          args=(--release --formats "${{ matrix.formats }}")
+          if [ -n "${{ matrix.target }}" ]; then args+=(--target "${{ matrix.target }}"); fi
+          # hdiutil fails now and then on macOS runners ("Resource busy").
+          attempts=1
+          if [ "$RUNNER_OS" = "macOS" ]; then attempts=3; fi
+          packaged=false
+          for attempt in $(seq 1 "$attempts"); do
+            # Not the packager's notarization: its single stapler call fails on
+            # runners (CloudKit, error 68), which the DMG script works around.
+            if env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID -u APPLE_API_KEY \
+                   -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH cargo packager "${args[@]}"; then
+              packaged=true; break
+            fi
+            echo "Packaging failed (attempt $attempt of $attempts)"
+            if [ "$attempt" -lt "$attempts" ]; then sleep 30; fi
+          done
+          [ "$packaged" = true ] || exit 1
+
+          [ "$RUNNER_OS" = macOS ] || exit 0
+          # Unsigned without the certificate (HAS_APPLE_CERT false: no keychain).
+          [ -n "${APPLE_KEYCHAIN:-}" ] || unset APPLE_SIGNING_IDENTITY
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -z "${APPLE_ID:-}${APPLE_API_KEY:-}" ]; then
+            echo "::warning::Signed but not notarized: no notarization credentials."
+          fi
+          release_dir="target/${{ matrix.target }}/release"
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "bgpaint") | .version')
+          arch="${{ matrix.target }}"; arch="${arch%%-*}"
+          dmg="$release_dir/BGPaint_${version}_${arch}.dmg"
+          for attempt in 1 2 3; do
+            if script/bundle-macos-dmg "$release_dir/BGPaint.app" "$dmg"; then break; fi
+            echo "DMG failed (attempt $attempt of 3)"
+            [ "$attempt" -lt 3 ] || exit 1
+            sleep 30
+          done
+
+      - name: Remove macOS signing keychain
+        if: always() && runner.os == 'macOS' && env.APPLE_KEYCHAIN != ''
+        run: security delete-keychain "$APPLE_KEYCHAIN" || true
+
+      # The tarball script/install.sh downloads from the release.
+      - name: Bundle the Linux tarball
+        if: runner.os == 'Linux'
+        env:
+          BGPAINT_BINARY: target/release/bgpaint
+        run: script/bundle-linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BGPaint-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            target/**/release/bgpaint-linux-*.tar.gz
+            target/**/release/*.deb
+            target/**/release/*.AppImage
+            target/**/release/BGPaint_*.tar.gz
+            target/**/release/PKGBUILD
+            target/**/release/*.dmg
+            script/install.sh
+
+  release:
+    name: GitHub Release
+    needs: [prepare, package]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List packages
+        run: find dist -type f -exec ls -l {} +
+      # Created only now, once every package built. A draft release would
+      # otherwise leave its tag uncreated until someone publishes it.
+      - name: Create the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>/dev/null; then
+            echo "$TAG already exists"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" --silent
+            echo "Created $TAG at $SHA"
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.sha }}
+          draft: ${{ needs.prepare.outputs.draft == 'true' }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: dist/**/*

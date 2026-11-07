@@ -1,4 +1,8 @@
-# BGPaint
+<p align="center">
+  <img src="crates/bgpaint/assets/icon.svg" alt="BGPaint icon" width="128" height="128">
+</p>
+
+<h1 align="center">BGPaint</h1>
 
 A fast, native clone of **Windows 11 Paint** for **Linux** and **macOS**, written in Rust.
 
@@ -19,21 +23,58 @@ cargo build --release
 
 On Linux you need the usual windowing headers (`libxkbcommon`, `wayland`, `libGL`).
 
-## Installing on Linux
+## Install / Build packages
 
-These scripts install without a package manager:
+Releases are built by GitHub Actions (`.github/workflows/release.yml`): run the
+**Release** workflow by hand (Actions ▸ Release ▸ Run workflow) and it bumps the
+version in `Cargo.toml` (patch by default; minor/major, or an exact version, on
+request), builds every package, creates the `v*` tag and publishes the GitHub
+Release. Pushing a `v*` tag yourself makes a draft release instead.
+
+| OS | Packages |
+|---|---|
+| macOS (Apple silicon, Intel) | `BGPaint.app` inside a `.dmg` (min. macOS 10.15.7) |
+| Linux x86_64 | `.deb`, `.AppImage`, pacman `.tar.gz` + `PKGBUILD`, and the `bgpaint-linux-x86_64.tar.gz` that `install.sh` unpacks |
+
+macOS builds are signed with a Developer ID certificate and notarized (the
+`.app` and the `.dmg`) when the `APPLE_*` repository secrets are set; without
+them the packages are still built, unsigned.
+
+On Linux, these scripts install without a package manager. Only the
+system-wide one needs root:
 
 ```sh
+curl -fL https://github.com/belizariogr/bgpaint/releases/latest/download/install.sh | sh  # latest release, into ~/.local
 script/install-linux                    # build this checkout, into ~/.local
 script/install-linux-system             # build this checkout, into /usr (asks for sudo)
 script/uninstall.sh                     # remove the ~/.local install; asks before deleting settings
 script/install-linux-system --uninstall
 ```
 
-Both add a launcher entry (with the icon and the image types BGPaint opens) and the
-`bgpaint` command. `script/install.sh` installs a release tarball from GitHub instead
-(`curl -fL https://github.com/belizariogr/bgpaint/releases/latest/download/install.sh | sh`,
-once releases are published). `script/test-install` checks the scripts in a throwaway home.
+All of them add a launcher entry (with the icon and the image types BGPaint opens) and the
+`bgpaint` command. `script/test-install` checks the scripts in a throwaway home.
+
+To build packages locally, use [cargo-packager](https://github.com/crabnebula-dev/cargo-packager)
+(configured in `[package.metadata.packager]` of `crates/bgpaint/Cargo.toml`):
+
+```sh
+cargo install cargo-packager --locked
+cd crates/bgpaint
+cargo packager --release                     # this OS's default formats
+cargo packager --release --formats deb       # just one format
+```
+
+Packages are written to `target/release/` (or `target/<triple>/release/` with
+`--target`). The release `.dmg`, with the installer window art, comes from
+`script/bundle-macos-dmg target/release/BGPaint.app out.dmg`, which needs
+`pip install dmgbuild` and signs/notarizes when the `APPLE_*` variables are set
+(`script/test-macos-dmg` checks its layout). On rolling distros whose libraries
+use `.relr.dyn` (e.g. Arch), the AppImage step needs `NO_STRIP=1`; release
+AppImages are built on Ubuntu 22.04 for wider glibc compatibility.
+
+The icon is drawn in `crates/bgpaint/assets/icon.svg`; after editing it, run
+`script/generate-app-icons` (PNGs, `.icns`, `.ico`) and
+`script/generate-macos-dmg-assets` (DMG background and volume icon).
 
 ## License
 

@@ -33,3 +33,12 @@ jobs:
         run: cargo test --workspace
       - name: Build release
         run: cargo build --release
+      - name: Install scripts (script/test-install)
+        if: runner.os == 'Linux'
+        run: script/test-install
+      - name: Installer image layout (script/test-macos-dmg)
+        if: runner.os == 'macOS'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet "dmgbuild==1.6.7"
+          DMGBUILD="$RUNNER_TEMP/dmgbuild/bin/dmgbuild" script/test-macos-dmg

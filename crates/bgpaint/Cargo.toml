@@ -31,3 +31,68 @@ pollster.workspace = true
 muda = { version = "0.21.2", default-features = false }
 # Only to turn off winit's default menu (same version as eframe uses).
 winit = { version = "0.30.13", default-features = false }
+
+# Installable packages, built by cargo-packager in .github/workflows/release.yml
+# (`cargo packager --release`). Icons come from script/generate-app-icons.
+[package.metadata.packager]
+product-name = "BGPaint"
+identifier = "io.github.belizariogr.bgpaint"
+publisher = "Belizário Ribeiro"
+authors = ["Belizário Ribeiro"]
+copyright = "Copyright © 2026 Belizário Ribeiro"
+homepage = "https://github.com/belizariogr/bgpaint"
+category = "GraphicsAndDesign"
+long-description = """
+BGPaint is a fast, native clone of Windows 11 Paint for Linux and macOS, written
+in Rust: the same layout, layers, light and dark themes, and support for PNG,
+JPEG, GIF, BMP, TIFF, WebP, SVG, OpenRaster and more."""
+before-packaging-command = "cargo build --release -p bgpaint"
+icons = [
+    "assets/icon-16.png",
+    "assets/icon-32.png",
+    "assets/icon-48.png",
+    "assets/icon-64.png",
+    "assets/icon-128.png",
+    "assets/icon-256.png",
+    "assets/icon-512.png",
+    "assets/icon.icns",
+    "assets/icon.ico",
+]
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.15.7"
+
+[package.metadata.packager.deb]
+package-name = "bgpaint"
+section = "graphics"
+# Shared by deb, AppImage and pacman: image types, categories and a
+# StartupWMClass matching the app id set in `main.rs`.
+desktop-template = "packaging/linux/bgpaint.desktop"
+# winit/glutin dlopen X11, Wayland, xkbcommon and GL/EGL at run time.
+depends = [
+    "libc6",
+    "libgl1",
+    "libegl1",
+    "libx11-6",
+    "libxcursor1",
+    "libxrandr2",
+    "libxi6",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libwayland-client0",
+    "libwayland-cursor0",
+    "libwayland-egl1",
+]
+
+[package.metadata.packager.pacman]
+# The pkgname is derived from product-name (`bg-paint`); not configurable.
+depends = [
+    "libglvnd",
+    "libx11",
+    "libxcursor",
+    "libxrandr",
+    "libxi",
+    "libxkbcommon",
+    "libxkbcommon-x11",
+    "wayland",
+]

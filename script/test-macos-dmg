@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Checks script/bundle-macos-dmg on a dummy, unsigned app: the image mounts, holds
+# BGPaint.app and the Applications link, and its Finder layout (.DS_Store written
+# by dmgbuild) has BGDesk's window, background picture and icon positions.
+# macOS only; needs dmgbuild (DMGBUILD or PATH). No signing, no network.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+dmgbuild="${DMGBUILD:-$(command -v dmgbuild || true)}"
+[ -n "$dmgbuild" ] || { echo "dmgbuild not found (pip install \"dmgbuild==1.6.7\")" >&2; exit 1; }
+# ds_store ships with dmgbuild; use the interpreter dmgbuild runs on.
+python=$(head -1 "$dmgbuild" | sed 's/^#![[:space:]]*//')
+
+work=$(mktemp -d)
+mount="$work/mnt"
+cleanup() {
+  hdiutil detach "$mount" -quiet 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+app="$work/BGPaint.app"
+mkdir -p "$app/Contents/MacOS"
+printf '#!/bin/sh\n' > "$app/Contents/MacOS/BGPaint"
+chmod +x "$app/Contents/MacOS/BGPaint"
+
+env -u APPLE_SIGNING_IDENTITY DMGBUILD="$dmgbuild" \
+  "$root/script/bundle-macos-dmg" "$app" "$work/out/BGPaint.dmg" >/dev/null
+
+mkdir "$mount"
+hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$work/out/BGPaint.dmg" >/dev/null
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+[ -x "$mount/BGPaint.app/Contents/MacOS/BGPaint" ] || fail "BGPaint.app missing"
+[ "$(readlink "$mount/Applications")" = /Applications ] || fail "Applications link missing"
+# FinderInfo/resource fork on the bundle break `codesign --verify --strict`.
+if xattr "$mount/BGPaint.app" | grep -qE '^com\.apple\.(FinderInfo|ResourceFork)$'; then
+  fail "BGPaint.app carries a FinderInfo/ResourceFork xattr"
+fi
+cmp -s "$mount/.VolumeIcon.icns" "$root/crates/bgpaint/packaging/macos/volume-icon.icns" \
+  || fail "volume icon differs from the committed one"
+[ -f "$mount/.background.tiff" ] || fail "background missing"
+tiffutil -info "$mount/.background.tiff" | grep -q "800 x 400\|800x400\|Width: 800" \
+  || fail "background is not the 800x400 art"
+tiffutil -info "$mount/.background.tiff" | grep -q "1600" || fail "background has no @2x image"
+
+"$python" -I - "$mount" <<'PY' || fail "Finder layout"
+import sys
+from ds_store import DSStore
+
+mount = sys.argv[1]
+with DSStore.open(f"{mount}/.DS_Store", "r") as store:
+    entries = {(e.filename, e.code): e.value for e in store}
+
+def want(key, check, what):
+    value = entries.get(key)
+    if value is None or not check(value):
+        sys.exit(f"{what}: {value!r}")
+
+want(("BGPaint.app", b"Iloc"), lambda v: tuple(v)[:2] == (200, 190), "app position")
+want(("Applications", b"Iloc"), lambda v: tuple(v)[:2] == (600, 190), "Applications position")
+want((".background.tiff", b"Iloc"), lambda v: tuple(v)[:2] == (2000, 2000), "hidden background")
+want((".VolumeIcon.icns", b"Iloc"), lambda v: tuple(v)[:2] == (2000, 2000), "hidden volume icon")
+want((".", b"bwsp"), lambda v: v["WindowBounds"].endswith("{800, 480}}")
+     and not v["ShowToolbar"] and not v["ShowStatusBar"], "window")
+want((".", b"icvp"), lambda v: v["backgroundType"] == 2 and v["iconSize"] == 128
+     and v["textSize"] == 16 and v["arrangeBy"] == "none", "icon view")
+PY
+
+echo "macOS DMG layout OK"
