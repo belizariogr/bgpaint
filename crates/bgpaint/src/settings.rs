@@ -29,6 +29,9 @@ pub struct Settings {
     pub last_dir: Option<PathBuf>,
     /// Look for a new release at startup (and install it, see [`crate::update`]).
     pub check_updates: bool,
+    /// The interface language picked in Settings (a code from [`crate::i18n::LANGUAGES`]);
+    /// `None` follows the system.
+    pub language: Option<String>,
 }
 
 impl Default for Settings {
@@ -46,6 +49,7 @@ impl Default for Settings {
             maximized: false,
             last_dir: None,
             check_updates: true,
+            language: None,
         }
     }
 }

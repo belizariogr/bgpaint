@@ -39,7 +39,7 @@ fn main() -> eframe::Result {
         single_instance::Start::Primary(listener) => listener,
     };
     let (w, h) = settings.window_size.unwrap_or((1280.0, 800.0));
-    let tr = i18n::detect();
+    let tr = i18n::resolve(settings.language.as_deref());
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(format!("{} - {}", tr.untitled, tr.app_name))

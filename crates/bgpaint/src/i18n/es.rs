@@ -224,6 +224,7 @@ pub static STRINGS: Strings = Strings {
     share_failed: "No se pudo compartir la imagen",
     // Settings page
     app_theme: "Tema de la aplicación",
+    language: "Idioma",
     theme_light: "Claro",
     theme_dark: "Oscuro",
     theme_system: "Usar la configuración del sistema",

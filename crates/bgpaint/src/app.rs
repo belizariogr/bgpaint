@@ -135,7 +135,7 @@ pub struct PaintApp {
     automation: Option<crate::automation::Automation>,
     /// The global menu bar on macOS.
     #[cfg(target_os = "macos")]
-    native_menu: Option<crate::mac_menu::NativeMenu>,
+    pub native_menu: Option<crate::mac_menu::NativeMenu>,
 }
 
 impl PaintApp {
@@ -163,8 +163,8 @@ impl PaintApp {
             previous_tool: Tool::Brush,
             tools: ToolSettings::default(),
             colors,
+            tr: i18n::resolve(settings.language.as_deref()),
             settings,
-            tr: i18n::detect(),
             theme: Theme::light(),
             theme_dark: None,
             ui: UiState::default(),
