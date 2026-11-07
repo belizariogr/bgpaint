@@ -6,6 +6,8 @@
 #   install.sh prefix   <tarball>  <prefix>               (script/install-linux-system)
 #   install.sh appimage <AppImage> <AppImage to replace>
 #   install.sh deb      <package.deb>
+#   install.sh rpm      <package.rpm>
+#   install.sh pacman   <package.pkg.tar.zst>
 #   install.sh macapp   <dmg>      <BGPaint.app>
 #
 # The new files are put next to the old ones first and swapped in with a rename, so a
@@ -85,6 +87,23 @@ deb)
     else
         dpkg -i "$package"
     fi
+    ;;
+
+rpm)
+    # The download was checked against the release's SHA-256; the package itself is unsigned.
+    if command -v dnf >/dev/null 2>&1; then
+        dnf install -y "$package"
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install --allow-unsigned-rpm "$package"
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y "$package"
+    else
+        rpm -U --replacepkgs "$package"
+    fi
+    ;;
+
+pacman)
+    pacman -U --noconfirm --needed "$package"
     ;;
 
 macapp)

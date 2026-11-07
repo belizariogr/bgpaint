@@ -59,10 +59,6 @@ Release. Pushing a `v*` tag yourself makes a draft release instead.
 | macOS (Apple silicon, Intel) | `BGPaint.app` inside a `.dmg` (min. macOS 10.15.7) |
 | Linux x86_64 | `.deb`, `.rpm`, `.AppImage`, pacman `.pkg.tar.zst` (plus its `.tar.gz` + `PKGBUILD`), and the `bgpaint-linux-x86_64.tar.gz` that `install.sh` unpacks |
 
-macOS builds are signed with a Developer ID certificate and notarized (the
-`.app` and the `.dmg`) when the `APPLE_*` repository secrets are set; without
-them the packages are still built, unsigned.
-
 cargo-packager has no `.rpm` and writes only a `PKGBUILD` for pacman, so two more
 scripts make those: `script/bundle-pacman <dir with PKGBUILD and tarball> <out dir>`
 (needs `makepkg`) and `script/bundle-rpm <bgpaint-linux-x86_64.tar.gz> <out dir>`
@@ -94,10 +90,9 @@ cargo packager --release --formats deb       # just one format
 Packages are written to `target/release/` (or `target/<triple>/release/` with
 `--target`). The release `.dmg`, with the installer window art, comes from
 `script/bundle-macos-dmg target/release/BGPaint.app out.dmg`, which needs
-`pip install dmgbuild` and signs/notarizes when the `APPLE_*` variables are set
-(`script/test-macos-dmg` checks its layout). On rolling distros whose libraries
-use `.relr.dyn` (e.g. Arch), the AppImage step needs `NO_STRIP=1`; release
-AppImages are built on Ubuntu 22.04 for wider glibc compatibility.
+`pip install dmgbuild` (`script/test-macos-dmg` checks its layout). On rolling
+distros whose libraries use `.relr.dyn` (e.g. Arch), the AppImage step needs
+`NO_STRIP=1`; release AppImages are built on Ubuntu 22.04 for wider glibc compatibility.
 
 The icon is drawn in `crates/bgpaint/assets/icon.svg`; after editing it, run
 `script/generate-app-icons` (PNGs, `.icns`, `.ico`) and
@@ -115,13 +110,15 @@ check off or runs it by hand, as does BGPaint ▸ Check for Updates on macOS):
 | `install.sh` (`~/.local/bgpaint.app`) | `bgpaint-linux-<arch>.tar.gz` | no, silent |
 | `script/install-linux-system` (`/usr`, `/usr/local`) | the same tarball | root (polkit, or `sudo`) |
 | `.deb` | the `.deb` (apt) | root (polkit, or `sudo`) |
+| `.rpm` | the `.rpm` (dnf, zypper, yum) | root (polkit, or `sudo`) |
+| pacman `.pkg.tar.zst` | the `.pkg.tar.zst` (pacman) | root (polkit, or `sudo`) |
 | AppImage | the `.AppImage` | only if its folder is not writable |
-| macOS `.dmg` | the `.dmg` for the Mac's CPU (same Developer ID required) | only if the app's folder is not writable |
+| macOS `.dmg` | the `.dmg` | only if the app's folder is not writable |
 
 Root is requested through the desktop's polkit agent (`pkexec`); without one, BGPaint asks
-for the password itself and runs `sudo`. Copies owned by pacman/rpm or built from source only
-report the new version. Builds with debug assertions, or `BGPAINT_NO_UPDATE=1`, skip the
-startup check. The installer steps are in `crates/bgpaint/src/update/install.sh`.
+for the password itself and runs `sudo`. Copies owned by a package with another name (an AUR
+build, say) or built from source only report the new version. Builds with debug assertions,
+or `BGPAINT_NO_UPDATE=1`, skip the startup check. The installer steps are in `crates/bgpaint/src/update/install.sh`.
 
 ## License
 
