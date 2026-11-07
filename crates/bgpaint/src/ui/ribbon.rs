@@ -679,17 +679,69 @@ pub fn paint_shape_icon(p: &egui::Painter, kind: ShapeKind, r: Rect, color: Colo
         }
         ShapeKind::Polygon => {
             let pts = vec![pt(0.15, 1.0), pt(0.35, 0.0), pt(0.95, 0.0), pt(0.75, 0.55), pt(1.0, 1.0)];
-            p.add(egui::Shape::closed_line(pts, stroke));
+            closed_outline(p, pts, stroke);
         }
         k => {
             let rect = RectF::from_xywh(r.left(), r.top(), r.width(), r.height());
             if let Some(path) = shapes::box_shape_path(k, &rect) {
                 for sub in flatten_path(&path) {
-                    p.add(egui::Shape::closed_line(sub, stroke));
+                    closed_outline(p, sub, stroke);
                 }
             }
         }
     }
+}
+
+/// Turn (between a segment and the next) past which a corner counts as sharp: about 127°,
+/// i.e. an inner angle under ~53°.
+const SHARP_TURN_COS: f32 = -0.6;
+
+/// Strokes a closed polyline. egui joins segments with unlimited miters, which turn into long
+/// spikes at very sharp corners (the heart's tip and notch, the lightning bolt's points), so the
+/// outline is cut there into open pieces that meet at the corner.
+fn closed_outline(p: &egui::Painter, pts: Vec<Pos2>, stroke: EStroke) {
+    match split_at_sharp_corners(&pts) {
+        None => {
+            p.add(egui::Shape::closed_line(pts, stroke));
+        }
+        Some(pieces) => {
+            for piece in pieces {
+                p.add(egui::Shape::line(piece, stroke));
+            }
+        }
+    }
+}
+
+/// The open pieces of the closed polyline `pts` between its sharp corners (each piece starts
+/// and ends on one), or `None` when it has no sharp corner.
+fn split_at_sharp_corners(pts: &[Pos2]) -> Option<Vec<Vec<Pos2>>> {
+    let mut pts = pts.to_vec();
+    pts.dedup();
+    while pts.len() > 1 && pts.first() == pts.last() {
+        pts.pop();
+    }
+    let n = pts.len();
+    if n < 3 {
+        return None;
+    }
+    let sharp = |i: usize| {
+        let (a, b, c) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+        (b - a).normalized().dot((c - b).normalized()) < SHARP_TURN_COS
+    };
+    let cuts: Vec<usize> = (0..n).filter(|&i| sharp(i)).collect();
+    if cuts.is_empty() {
+        return None;
+    }
+    let pieces = cuts
+        .iter()
+        .enumerate()
+        .map(|(k, &start)| {
+            let end = cuts[(k + 1) % cuts.len()];
+            let len = (end + n - start - 1) % n + 1;
+            (0..=len).map(|j| pts[(start + j) % n]).collect()
+        })
+        .collect();
+    Some(pieces)
 }
 
 /// Flattens a tiny-skia path into polylines (one per subpath).
@@ -738,4 +790,46 @@ pub fn flatten_path(path: &bgpaint_core::tiny_skia::Path) -> Vec<Vec<Pos2>> {
         out.push(cur);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn icon(kind: ShapeKind) -> Vec<Pos2> {
+        let path = shapes::box_shape_path(kind, &RectF::from_xywh(0.0, 0.0, 20.0, 20.0)).unwrap();
+        flatten_path(&path).remove(0)
+    }
+
+    #[test]
+    fn smooth_and_square_outlines_stay_closed() {
+        assert!(split_at_sharp_corners(&icon(ShapeKind::Rectangle)).is_none());
+        assert!(split_at_sharp_corners(&icon(ShapeKind::Oval)).is_none());
+    }
+
+    #[test]
+    fn heart_is_cut_at_its_tip_and_notch() {
+        let pts = icon(ShapeKind::Heart);
+        let pieces = split_at_sharp_corners(&pts).unwrap();
+        assert_eq!(pieces.len(), 2, "{pieces:?}");
+        // The pieces cover the whole outline: every segment once, sharing the cut points.
+        let segments: usize = pieces.iter().map(|p| p.len() - 1).sum();
+        assert_eq!(segments, pts.len());
+        let (top, bottom) = (pieces[0][0].y.min(pieces[1][0].y), pieces[0][0].y.max(pieces[1][0].y));
+        assert!(top < 10.0 && bottom > 19.0, "cuts at y = {top}, {bottom}");
+    }
+
+    #[test]
+    fn a_single_sharp_corner_gives_one_piece_around() {
+        // A thin triangle: only the corner at the origin is sharp.
+        let pts = [pos2(0.0, 0.0), pos2(10.0, 1.0), pos2(10.0, -1.0)];
+        let pieces = split_at_sharp_corners(&pts).unwrap();
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0], vec![pts[0], pts[1], pts[2], pts[0]]);
+        let tri = [pos2(0.0, 0.0), pos2(100.0, 3.0), pos2(100.0, 6.0), pos2(50.0, 50.0)];
+        let pieces = split_at_sharp_corners(&tri).unwrap();
+        assert_eq!(pieces.len(), 1, "{pieces:?}");
+        assert_eq!(pieces[0].first(), pieces[0].last());
+        assert_eq!(pieces[0].len(), tri.len() + 1);
+    }
 }
