@@ -53,31 +53,35 @@ pub fn dialog(
             ui.add_space(10.0);
             body(ui);
         });
-        egui::Frame::NONE
-            .fill(t.dialog_footer)
-            .corner_radius(CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 })
-            .inner_margin(Margin::same(24))
-            .show(ui, |ui| {
-                ui.set_width(width - 48.0);
-                let n = 1 + usize::from(buttons.1.is_some()) + usize::from(buttons.2.is_some());
-                let bw = (width - 48.0 - 8.0 * (n as f32 - 1.0)) / n as f32;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if widgets::accent_button(ui, t, buttons.0, bw).clicked() {
-                        result = Footer::Primary;
-                    }
-                    if let Some(s) = buttons.1
-                        && widgets::standard_button(ui, t, s, bw).clicked()
-                    {
-                        result = Footer::Secondary;
-                    }
-                    if let Some(c) = buttons.2
-                        && widgets::standard_button(ui, t, c, bw).clicked()
-                    {
-                        result = Footer::Cancel;
-                    }
+        if cfg!(target_os = "macos") {
+            result = mac_footer(ui, t, width, buttons);
+        } else {
+            egui::Frame::NONE
+                .fill(t.dialog_footer)
+                .corner_radius(CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 })
+                .inner_margin(Margin::same(24))
+                .show(ui, |ui| {
+                    ui.set_width(width - 48.0);
+                    let n = 1 + usize::from(buttons.1.is_some()) + usize::from(buttons.2.is_some());
+                    let bw = (width - 48.0 - 8.0 * (n as f32 - 1.0)) / n as f32;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if widgets::accent_button(ui, t, buttons.0, bw).clicked() {
+                            result = Footer::Primary;
+                        }
+                        if let Some(s) = buttons.1
+                            && widgets::standard_button(ui, t, s, bw).clicked()
+                        {
+                            result = Footer::Secondary;
+                        }
+                        if let Some(c) = buttons.2
+                            && widgets::standard_button(ui, t, c, bw).clicked()
+                        {
+                            result = Footer::Cancel;
+                        }
+                    });
                 });
-            });
+        }
     });
     if result == Footer::None {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -86,6 +90,33 @@ pub fn dialog(
             result = Footer::Primary;
         }
     }
+    result
+}
+
+/// The macOS button row: no footer band, buttons sized to their titles and right aligned with
+/// the default button last (`[Don't Save] [Cancel] [Save]`), as in AppKit dialogs.
+fn mac_footer(ui: &mut egui::Ui, t: &Theme, width: f32, buttons: (&str, Option<&str>, Option<&str>)) -> Footer {
+    let mut result = Footer::None;
+    let bw = |ui: &egui::Ui, text: &str| (widgets::text_width(ui, text, widgets::mac::font()) + 32.0).max(84.0);
+    egui::Frame::NONE.inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 18 }).show(ui, |ui| {
+        ui.set_width(width - 48.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if widgets::accent_button(ui, t, buttons.0, bw(ui, buttons.0)).clicked() {
+                result = Footer::Primary;
+            }
+            if let Some(c) = buttons.2
+                && widgets::standard_button(ui, t, c, bw(ui, c)).clicked()
+            {
+                result = Footer::Cancel;
+            }
+            if let Some(s) = buttons.1
+                && widgets::standard_button(ui, t, s, bw(ui, s)).clicked()
+            {
+                result = Footer::Secondary;
+            }
+        });
+    });
     result
 }
 

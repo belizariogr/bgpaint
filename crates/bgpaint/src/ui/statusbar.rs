@@ -49,15 +49,7 @@ impl PaintApp {
                 let combo = Rect::from_min_max(pos2(right - 350.0, cy - 15.0), pos2(right - 252.0, cy + 15.0));
                 let resp = ui.interact(combo, Id::unique("st-zoom-combo"), Sense::click());
                 let open = self.ui.open_menu == Some(MenuKind::Zoom);
-                ui.painter().rect(
-                    combo,
-                    widgets::RADIUS,
-                    if open || resp.hovered() { t.button_hover } else { t.button_bg },
-                    egui::Stroke::new(1.0, t.button_border),
-                    egui::StrokeKind::Inside,
-                );
-                widgets::label(ui.painter(), pos2(combo.left() + 10.0, cy), Align2::LEFT_CENTER, &self.view.zoom_percent(), 12.0, t.text);
-                widgets::paint_chevron(ui.painter(), pos2(combo.right() - 14.0, cy), t.text, 12.0);
+                widgets::paint_combo_box(ui, &t, combo, &resp, &self.view.zoom_percent(), 12.0, open);
                 if resp.on_hover_text(tr.zoom_level).clicked() {
                     self.toggle_menu(MenuKind::Zoom, combo);
                 }

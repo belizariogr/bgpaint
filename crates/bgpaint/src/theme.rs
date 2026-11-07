@@ -184,6 +184,7 @@ impl Theme {
 pub const ICONS: &str = "icons";
 pub const ICONS_FILLED: &str = "icons-filled";
 pub const SEMIBOLD: &str = "semibold";
+pub const SYSTEM: &str = "system";
 
 pub fn icons() -> FontFamily {
     FontFamily::Name(ICONS.into())
@@ -193,12 +194,19 @@ pub fn icons_filled() -> FontFamily {
     FontFamily::Name(ICONS_FILLED.into())
 }
 
+/// The platform UI font: San Francisco on macOS (read from the system at start-up), Selawik
+/// elsewhere or when it cannot be read.
+pub fn system() -> FontFamily {
+    FontFamily::Name(SYSTEM.into())
+}
+
 pub fn semibold() -> FontFamily {
     FontFamily::Name(SEMIBOLD.into())
 }
 
 /// Installs the bundled fonts: Selawik (an open metric-compatible substitute of Segoe UI) and the
-/// Fluent UI System Icons subsets. Fonts are embedded so start-up never scans the system.
+/// Fluent UI System Icons subsets. Fonts are embedded so start-up never scans the system; on macOS
+/// the one exception is San Francisco, read from its fixed path for the native text fields.
 pub fn install_fonts(ctx: &egui::Context) {
     use egui::{FontData, FontDefinitions};
     use std::sync::Arc;
@@ -215,7 +223,15 @@ pub fn install_fonts(ctx: &egui::Context) {
     let fallbacks: Vec<String> = proportional.iter().skip(1).cloned().collect();
     let mut semibold_list = vec!["selawik-semibold".to_owned()];
     semibold_list.extend(fallbacks);
-    fonts.families.insert(semibold(), semibold_list);
+    fonts.families.insert(semibold(), semibold_list.clone());
+    let mut system_list = vec!["selawik".to_owned()];
+    system_list.extend(semibold_list.into_iter().skip(1));
+    #[cfg(target_os = "macos")]
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+        fonts.font_data.insert("sf".to_owned(), Arc::new(FontData::from_owned(bytes)));
+        system_list.insert(0, "sf".to_owned());
+    }
+    fonts.families.insert(system(), system_list);
     fonts.families.insert(icons(), vec![ICONS.to_owned()]);
     fonts.families.insert(icons_filled(), vec![ICONS_FILLED.to_owned()]);
     ctx.set_fonts(fonts);
