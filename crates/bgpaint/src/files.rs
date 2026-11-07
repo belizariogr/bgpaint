@@ -56,6 +56,7 @@ pub struct Async {
 enum Queued {
     Open(PathBuf),
     Import(u64, PathBuf),
+    SaveAs(u64, PathBuf, SaveFormat, Option<Pending>),
 }
 
 impl Default for Async {
@@ -105,17 +106,7 @@ impl PaintApp {
                 DialogResult::Open(paths) => self.files.queue.extend(paths.into_iter().map(Queued::Open)),
                 DialogResult::Import(tab, p) => self.files.queue.push_back(Queued::Import(tab, p)),
                 DialogResult::Toast(text) => self.show_toast(text),
-                DialogResult::SaveAs(tab, p, f, then) => {
-                    // The user may have switched tabs while the dialog was up: save the tab
-                    // that asked (and drop the result if it was closed meanwhile).
-                    let Some(i) = self.tab_index(tab) else { continue };
-                    self.switch_tab(i);
-                    if self.save_to(&p, f)
-                        && let Some(then) = then
-                    {
-                        self.run_pending(then);
-                    }
-                }
+                DialogResult::SaveAs(tab, p, f, then) => self.files.queue.push_back(Queued::SaveAs(tab, p, f, then)),
             }
         }
         while self.ui.modal.is_none()
@@ -127,6 +118,17 @@ impl PaintApp {
                     if let Some(i) = self.tab_index(tab) {
                         self.switch_tab(i);
                         self.import_path(p);
+                    }
+                }
+                Queued::SaveAs(tab, p, f, then) => {
+                    // The user may have switched tabs while the dialog was up: save the tab
+                    // that asked (and drop the result if it was closed meanwhile).
+                    let Some(i) = self.tab_index(tab) else { continue };
+                    self.switch_tab(i);
+                    if self.save_to(&p, f)
+                        && let Some(then) = then
+                    {
+                        self.run_pending(then);
                     }
                 }
             }
@@ -149,7 +151,7 @@ impl PaintApp {
             Pending::CloseTab => self.close_current_tab(),
             Pending::Exit => {
                 // This tab was saved or its changes discarded; go on with the next one.
-                self.exit_discarded.insert(self.tab_id);
+                self.exit_discarded.insert(self.tab_id, self.history.state_id());
                 self.request_exit();
             }
         }
@@ -287,8 +289,8 @@ impl PaintApp {
     }
 
     /// Opens a file in its own tab (or switches to it when it is already open).
-    pub fn open_path(&mut self, _ctx: &egui::Context, path: PathBuf) {
-        let path = absolute(&path);
+    pub fn open_path(&mut self, _ctx: &egui::Context, original: PathBuf) {
+        let path = absolute(&original);
         if self.focus_open_path(&path) {
             return;
         }
@@ -302,7 +304,7 @@ impl PaintApp {
                 self.settings.save();
             }
             Err(e) => {
-                self.settings.recent_files.retain(|p| p != &path);
+                self.settings.recent_files.retain(|p| p != &path && p != &original);
                 self.ui.modal = Some(Modal::Error(format!("{}\n{e}", self.tr.open_failed)));
             }
         }

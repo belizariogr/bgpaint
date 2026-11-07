@@ -124,7 +124,8 @@ pub struct PaintApp {
     pub tab_id: u64,
     pub next_tab_id: u64,
     /// Tabs whose changes the user chose to discard during the current exit.
-    pub exit_discarded: std::collections::HashSet<u64>,
+    /// (tab id → history state discarded); a tab edited again afterwards is asked about again.
+    pub exit_discarded: std::collections::HashMap<u64, u64>,
     /// Tab to go back to after closing a background tab.
     pub return_to_tab: Option<u64>,
     #[cfg(feature = "automation")]

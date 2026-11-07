@@ -38,23 +38,30 @@ impl PaintApp {
     }
 
     pub fn set_wallpaper(&mut self, ctx: &egui::Context, mode: WallpaperMode) {
-        // A unique name makes desktops that cache by path pick up the new image; the previous
-        // ones are no longer needed.
-        if let Ok(entries) = std::fs::read_dir(platform::data_dir()) {
-            for e in entries.flatten() {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with("wallpaper-") && name.ends_with(".png") {
-                    let _ = std::fs::remove_file(e.path());
-                }
-            }
-        }
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        // A unique name makes desktops that cache by path pick up the new image.
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let Some(file) = self.export_png(&format!("wallpaper-{stamp}.png")) else {
             self.show_toast(self.tr.wallpaper_failed);
             return;
         };
         let (done, failed) = (self.tr.wallpaper_done, self.tr.wallpaper_failed);
-        self.run_in_background(ctx, move || Some(if platform::set_wallpaper(&file, mode) { done } else { failed }.to_owned()));
+        self.run_in_background(ctx, move || {
+            if !platform::set_wallpaper(&file, mode) {
+                return Some(failed.to_owned());
+            }
+            // Earlier wallpapers are no longer shown (only those older than this one, in case
+            // a newer "Set as background" is running at the same time).
+            let current = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let stamp_of = |n: &str| n.strip_prefix("wallpaper-")?.strip_suffix(".png")?.parse::<u128>().ok();
+            let mine = stamp_of(&current).unwrap_or(0);
+            if let Ok(entries) = std::fs::read_dir(platform::data_dir()) {
+                for e in entries.flatten() {
+                    if stamp_of(&e.file_name().to_string_lossy()).is_some_and(|s| s < mine) {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+            Some(done.to_owned())
+        });
     }
 }

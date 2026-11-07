@@ -175,6 +175,9 @@ impl PaintApp {
     /// Shows an opened file: reuses a pristine blank document or adds a tab.
     pub fn show_document(&mut self, doc: Document, file: FileState) {
         if self.current_is_pristine() {
+            // A new id: anything still pending for the blank canvas (a Save As) must not apply.
+            self.tab_id = self.next_tab_id;
+            self.next_tab_id += 1;
             self.set_document(doc);
             self.file = FileState { saved_state: self.history.state_id(), ..file };
         } else {
@@ -223,19 +226,19 @@ impl PaintApp {
         self.request_exit();
     }
 
-    fn needs_saving(&self, id: u64, modified: bool) -> bool {
-        modified && !self.exit_discarded.contains(&id)
+    fn needs_saving(&self, id: u64, modified: bool, state: u64) -> bool {
+        modified && self.exit_discarded.get(&id) != Some(&state)
     }
 
     /// Asks about every tab with unsaved changes in turn, then closes the window.
     pub fn request_exit(&mut self) {
         self.commit_interaction();
-        if !self.needs_saving(self.tab_id, self.modified())
-            && let Some(p) = self.tabs.iter().position(|t| self.needs_saving(t.id, t.modified()))
+        if !self.needs_saving(self.tab_id, self.modified(), self.history.state_id())
+            && let Some(p) = self.tabs.iter().position(|t| self.needs_saving(t.id, t.modified(), t.history.state_id()))
         {
             self.switch_tab(self.strip_pos(p));
         }
-        if self.needs_saving(self.tab_id, self.modified()) {
+        if self.needs_saving(self.tab_id, self.modified(), self.history.state_id()) {
             self.ui.modal = Some(crate::ui::dialogs::Modal::ConfirmSave(Pending::Exit));
         } else {
             self.allow_close = true;
