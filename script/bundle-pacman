@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Builds the package `pacman -U` installs (bgpaint-<version>-1-<arch>.pkg.tar.zst)
+# from what `cargo packager --formats pacman` writes: a PKGBUILD and the
+# bgpaint_<version>_<arch>.tar.gz it names. Needs makepkg (Arch Linux) and a
+# non-root user, which makepkg requires.
+
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+    echo "Usage: ${0##*/} <dir with PKGBUILD and its tarball> <output dir>" >&2
+    exit 1
+fi
+
+src="$(cd "$1" && pwd)"
+mkdir -p "$2"
+out="$(cd "$2" && pwd)"
+
+temp="$(mktemp -d)"
+trap 'rm -rf "$temp"' EXIT
+
+cp "$src/PKGBUILD" "$temp/"
+# shellcheck disable=SC1091 # the PKGBUILD cargo-packager wrote
+tarball="$(source "$src/PKGBUILD" && echo "${source[0]}")"
+cp "$src/$tarball" "$temp/"
+
+# cargo-packager derives the name from product-name (`bg-paint`); the package
+# is `bgpaint`, like the binary, the .deb and the AUR convention. A pkgver
+# cannot hold `-`: 1.0.0-beta.1 becomes 1.0.0beta.1, which pacman sorts
+# before 1.0.0.
+sed -i \
+    -e 's/^pkgname=.*/pkgname=bgpaint/' \
+    -e '/^pkgver=/ s/-//g' \
+    -e "s/^conflicts=.*/conflicts=('bg-paint')/" \
+    -e "s/^replaces=.*/replaces=('bg-paint')/" \
+    -e "s/^options=.*/options=('!lto' '!debug' '!strip')\nlicense=('MIT')/" \
+    -e 's|cp -r "${srcdir}"/\* "${pkgdir}"/|cp -r "${srcdir}/usr" "${pkgdir}/"|' \
+    "$temp/PKGBUILD"
+# Its package() copied all of $srcdir, the source tarball included.
+grep -qF 'cp -r "${srcdir}/usr"' "$temp/PKGBUILD" || {
+    echo "error: unexpected package() in $src/PKGBUILD" >&2
+    exit 1
+}
+
+# The package only copies a prebuilt binary: no build or runtime dependency
+# is needed to make it (--nodeps), and pacman checks them on install.
+(cd "$temp" && PKGDEST="$out" PKGEXT=.pkg.tar.zst makepkg --nodeps --clean --force --noconfirm)
+ls "$out"/bgpaint-*.pkg.tar.zst

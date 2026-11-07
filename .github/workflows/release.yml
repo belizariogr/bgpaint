@@ -19,6 +19,8 @@ on:
       - rust-toolchain.toml
       - script/bundle-linux
       - script/bundle-macos-dmg
+      - script/bundle-pacman
+      - script/bundle-rpm
       - script/install.sh
   workflow_dispatch:
     inputs:
@@ -338,9 +340,61 @@ jobs:
             target/**/release/*.dmg
             script/install.sh
 
+  # `pacman -U` installs a .pkg.tar.zst, which only makepkg (Arch Linux) makes;
+  # cargo-packager writes just the PKGBUILD and the tarball it packages.
+  pacman:
+    name: Package (pacman)
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: BGPaint-linux-x86_64
+          path: linux
+      - name: Build the pacman package
+        run: |
+          # makepkg refuses to run as root.
+          useradd --create-home builder
+          mkdir -p pacman
+          chown -R builder: .
+          su builder -c 'script/bundle-pacman linux/target/release pacman'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BGPaint-pacman
+          if-no-files-found: error
+          path: pacman/*.pkg.tar.zst
+
+  # The .rpm (Fedora, openSUSE…), made from the tarball script/bundle-linux wrote.
+  rpm:
+    name: Package (rpm)
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: BGPaint-linux-x86_64
+          path: linux
+      - name: Build the rpm package
+        run: |
+          dnf install -y rpm-build
+          script/bundle-rpm linux/target/release/bgpaint-linux-x86_64.tar.gz rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BGPaint-rpm
+          if-no-files-found: error
+          path: rpm/*.rpm
+
   release:
     name: GitHub Release
-    needs: [prepare, package]
+    needs: [prepare, package, pacman, rpm]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
