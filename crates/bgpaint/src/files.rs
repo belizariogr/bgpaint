@@ -23,6 +23,12 @@ impl FileState {
     pub fn display_name(&self, tr: &Strings) -> String {
         self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr.untitled.to_owned())
     }
+
+    /// The document came from a file that no longer exists (deleted or moved since it was
+    /// opened or saved): it only lives in memory now.
+    pub fn missing_on_disk(&self) -> bool {
+        self.path.as_ref().is_some_and(|p| !p.exists())
+    }
 }
 
 /// An action waiting for the user to resolve unsaved changes.
@@ -138,7 +144,7 @@ impl PaintApp {
     /// Asks to save if needed, then performs `action`.
     pub fn confirm_unsaved(&mut self, action: Pending) {
         self.commit_interaction();
-        if self.modified() {
+        if self.unsaved() {
             self.ui.modal = Some(Modal::ConfirmSave(action));
         } else {
             self.ui.modal = None;
@@ -161,14 +167,16 @@ impl PaintApp {
     pub fn resolve_unsaved(&mut self, ctx: &egui::Context, action: Pending, save: bool) {
         self.ui.modal = None;
         if save {
+            // A file whose folder is gone too cannot be written back: ask for a new place.
+            let folder_exists = |p: &Path| p.parent().is_some_and(Path::is_dir);
             match (&self.file.path, self.file.format) {
-                (Some(p), Some(f)) => {
+                (Some(p), Some(f)) if folder_exists(p) => {
                     let p = p.clone();
                     if self.save_to(&p, f) {
                         self.run_pending(action);
                     }
                 }
-                _ => self.save_as_dialog(ctx, Some(SaveFormat::Png), Some(action)),
+                (_, f) => self.save_as_dialog(ctx, Some(f.unwrap_or(SaveFormat::Png)), Some(action)),
             }
         } else {
             self.run_pending(action);

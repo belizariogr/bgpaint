@@ -228,6 +228,11 @@ impl PaintApp {
         self.history.state_id() != self.file.saved_state
     }
 
+    /// Closing would lose something: there are changes, or the file was deleted from disk.
+    pub fn unsaved(&self) -> bool {
+        self.modified() || self.file.missing_on_disk()
+    }
+
     pub fn show_toast(&mut self, text: impl Into<String>) {
         self.toast = Some((text.into(), Instant::now()));
     }
@@ -270,7 +275,7 @@ impl PaintApp {
 
     fn handle_close_request(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
-            if self.any_modified() {
+            if self.any_unsaved() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.begin_exit();
             } else {

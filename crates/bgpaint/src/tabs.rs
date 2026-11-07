@@ -32,6 +32,11 @@ impl DocTab {
         self.history.state_id() != self.file.saved_state
     }
 
+    /// Closing would lose something: there are changes, or the file was deleted from disk.
+    pub fn unsaved(&self) -> bool {
+        self.modified() || self.file.missing_on_disk()
+    }
+
     pub fn name(&self, tr: &Strings) -> String {
         self.file.display_name(tr)
     }
@@ -76,8 +81,9 @@ impl PaintApp {
         self.tabs.iter().position(|t| t.id == id).map(|p| self.strip_pos(p))
     }
 
-    pub fn any_modified(&self) -> bool {
-        self.modified() || self.tabs.iter().any(DocTab::modified)
+    /// Whether closing the window would lose anything (checks the disk, so not for every frame).
+    pub fn any_unsaved(&self) -> bool {
+        self.unsaved() || self.tabs.iter().any(DocTab::unsaved)
     }
 
     fn take_current(&mut self) -> DocTab {
@@ -226,19 +232,19 @@ impl PaintApp {
         self.request_exit();
     }
 
-    fn needs_saving(&self, id: u64, modified: bool, state: u64) -> bool {
-        modified && self.exit_discarded.get(&id) != Some(&state)
+    fn needs_saving(&self, id: u64, unsaved: bool, state: u64) -> bool {
+        unsaved && self.exit_discarded.get(&id) != Some(&state)
     }
 
     /// Asks about every tab with unsaved changes in turn, then closes the window.
     pub fn request_exit(&mut self) {
         self.commit_interaction();
-        if !self.needs_saving(self.tab_id, self.modified(), self.history.state_id())
-            && let Some(p) = self.tabs.iter().position(|t| self.needs_saving(t.id, t.modified(), t.history.state_id()))
+        if !self.needs_saving(self.tab_id, self.unsaved(), self.history.state_id())
+            && let Some(p) = self.tabs.iter().position(|t| self.needs_saving(t.id, t.unsaved(), t.history.state_id()))
         {
             self.switch_tab(self.strip_pos(p));
         }
-        if self.needs_saving(self.tab_id, self.modified(), self.history.state_id()) {
+        if self.needs_saving(self.tab_id, self.unsaved(), self.history.state_id()) {
             self.ui.modal = Some(crate::ui::dialogs::Modal::ConfirmSave(Pending::Exit));
         } else {
             self.allow_close = true;
