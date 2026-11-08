@@ -14,7 +14,7 @@ use bgpaint_core::history::Change;
 use bgpaint_core::raster;
 use bgpaint_core::selection::{SelectionMask, key_out};
 use bgpaint_core::shapes::RasterShape;
-use bgpaint_core::tiny_skia::{Pixmap, Transform};
+use bgpaint_core::tiny_skia::Pixmap;
 use egui::{Color32, Modifiers, PointerButton, Pos2, Stroke};
 
 /// Pixels lifted off the layer and being moved/transformed.
@@ -111,38 +111,7 @@ impl SelectOp {
 
 /// Draws `pixels` stretched into `geom`, clipped to the canvas.
 pub(crate) fn render_floating(pixels: &Pixmap, geom: &BoxGeom, canvas: (u32, u32)) -> Option<RasterShape> {
-    let r = geom.rect;
-    let (sx, sy) = (r.width() / pixels.width() as f32, r.height() / pixels.height() as f32);
-    let exact = geom.angle == 0.0 && (sx - 1.0).abs() < 1e-4 && (sy - 1.0).abs() < 1e-4 && r.min.x.fract() == 0.0 && r.min.y.fract() == 0.0;
-    let bounds = if exact {
-        PixelRect::from_xywh(r.min.x as i32, r.min.y as i32, pixels.width(), pixels.height())
-    } else {
-        let c = geom.corners();
-        let xs = c.iter().map(|p| p.x);
-        let ys = c.iter().map(|p| p.y);
-        PixelRect::enclosing(
-            xs.clone().fold(f32::MAX, f32::min),
-            ys.clone().fold(f32::MAX, f32::min),
-            xs.fold(f32::MIN, f32::max),
-            ys.fold(f32::MIN, f32::max),
-        )
-    }
-    .clamp_to(canvas.0, canvas.1);
-    if bounds.is_empty() {
-        return None;
-    }
-    let mut out = raster::pixmap(bounds.width(), bounds.height());
-    if exact {
-        raster::paste_region(&mut out, pixels, r.min.x as i32 - bounds.x0, r.min.y as i32 - bounds.y0);
-    } else {
-        let c = r.center();
-        let t = Transform::from_scale(sx, sy)
-            .post_translate(r.min.x, r.min.y)
-            .post_concat(Transform::from_rotate_at(geom.angle, c.x, c.y))
-            .post_translate(-bounds.x0 as f32, -bounds.y0 as f32);
-        raster::draw_transformed(&mut out, pixels, t, true);
-    }
-    Some(RasterShape { pixmap: out, x: bounds.x0, y: bounds.y0, clipped: false })
+    bgpaint_core::shapes::render_box(pixels, geom.rect, geom.center(), geom.angle, canvas)
 }
 
 impl PaintApp {

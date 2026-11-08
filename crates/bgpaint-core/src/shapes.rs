@@ -4,6 +4,7 @@ use crate::brush::Texture;
 use crate::color::Color;
 use crate::geom::{PixelRect, Point, RectF};
 use crate::raster;
+use crate::text::TextStyle;
 use tiny_skia::{FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -108,6 +109,30 @@ pub struct ShapePaint {
     pub fill_color: Color,
     /// Opacity of the whole shape (outline and fill together), 0..=1.
     pub opacity: f32,
+}
+
+impl ShapePaint {
+    /// The paint of a text object: the outline color is the text's, the fill its background.
+    pub fn for_text(style: &TextStyle) -> Self {
+        Self {
+            outline: ShapeStyle::Solid,
+            fill: if style.background.is_some() { ShapeStyle::Solid } else { ShapeStyle::None },
+            width: 1.0,
+            outline_color: style.color,
+            fill_color: style.background.unwrap_or(Color::WHITE),
+            opacity: style.opacity,
+        }
+    }
+
+    /// `style` with the colors and opacity of this paint (see [`ShapePaint::for_text`]).
+    pub fn text_style(&self, style: &TextStyle) -> TextStyle {
+        TextStyle {
+            color: self.outline_color,
+            background: (self.fill != ShapeStyle::None).then_some(self.fill_color),
+            opacity: self.opacity,
+            ..style.clone()
+        }
+    }
 }
 
 fn poly(points: &[(f32, f32)], r: &RectF) -> Option<Path> {
@@ -533,6 +558,58 @@ impl RasterShape {
     }
 }
 
+/// Multiplies a whole image by `opacity`.
+pub fn fade(image: &mut Pixmap, opacity: f32) {
+    let opacity = (opacity.clamp(0.0, 1.0) * 255.0).round() as u16;
+    if opacity < 255 {
+        for c in image.data_mut() {
+            *c = crate::color::mul_div255(u16::from(*c), opacity);
+        }
+    }
+}
+
+/// Draws `pixels` stretched into `rect` rotated by `angle` degrees around `pivot`, clipped to the
+/// canvas.
+pub fn render_box(pixels: &Pixmap, rect: RectF, pivot: Point, angle: f32, canvas: (u32, u32)) -> Option<RasterShape> {
+    let r = rect;
+    let (sx, sy) = (r.width() / pixels.width() as f32, r.height() / pixels.height() as f32);
+    let exact = angle == 0.0 && (sx - 1.0).abs() < 1e-4 && (sy - 1.0).abs() < 1e-4 && r.min.x.fract() == 0.0 && r.min.y.fract() == 0.0;
+    let c = pivot;
+    let whole = if exact {
+        PixelRect::from_xywh(r.min.x as i32, r.min.y as i32, pixels.width(), pixels.height())
+    } else {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let mut corners = [(r.min.x, r.min.y), (r.max.x, r.min.y), (r.max.x, r.max.y), (r.min.x, r.max.y)];
+        for (x, y) in &mut corners {
+            let (dx, dy) = (*x - c.x, *y - c.y);
+            (*x, *y) = (c.x + dx * cos - dy * sin, c.y + dx * sin + dy * cos);
+        }
+        let xs = corners.iter().map(|p| p.0);
+        let ys = corners.iter().map(|p| p.1);
+        PixelRect::enclosing(
+            xs.clone().fold(f32::MAX, f32::min),
+            ys.clone().fold(f32::MAX, f32::min),
+            xs.fold(f32::MIN, f32::max),
+            ys.fold(f32::MIN, f32::max),
+        )
+    };
+    let bounds = whole.clamp_to(canvas.0, canvas.1);
+    if bounds.is_empty() {
+        return None;
+    }
+    let mut out = raster::pixmap(bounds.width(), bounds.height());
+    if exact {
+        raster::paste_region(&mut out, pixels, r.min.x as i32 - bounds.x0, r.min.y as i32 - bounds.y0);
+    } else {
+        let t = Transform::from_scale(sx, sy)
+            .post_translate(r.min.x, r.min.y)
+            .post_concat(Transform::from_rotate_at(angle, c.x, c.y))
+            .post_translate(-bounds.x0 as f32, -bounds.y0 as f32);
+        raster::draw_transformed(&mut out, pixels, t, true);
+    }
+    Some(RasterShape { pixmap: out, x: bounds.x0, y: bounds.y0, clipped: bounds != whole })
+}
+
 /// Rasterizes `path` (already in canvas coordinates) clipped to the canvas.
 pub fn rasterize(path: &Path, paint: &ShapePaint, closed: bool, canvas_w: u32, canvas_h: u32) -> Option<RasterShape> {
     rasterize_with_head(path, None, paint, closed, canvas_w, canvas_h)
@@ -589,12 +666,7 @@ pub fn rasterize_with_head(
         }
     }
     // Faded as one piece, so the outline over the fill does not get darker.
-    let opacity = (paint.opacity.clamp(0.0, 1.0) * 255.0).round() as u16;
-    if opacity < 255 {
-        for c in out.data_mut() {
-            *c = crate::color::mul_div255(u16::from(*c), opacity);
-        }
-    }
+    fade(&mut out, paint.opacity);
     Some(RasterShape { pixmap: out, x: area.x0, y: area.y0, clipped: area != whole })
 }
 

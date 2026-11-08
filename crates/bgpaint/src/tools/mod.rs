@@ -65,6 +65,8 @@ impl Default for ToolSettings {
 }
 
 pub const MAX_SIZE: f32 = 100.0;
+/// Largest font size, in points.
+pub const MAX_FONT_SIZE: f32 = 500.0;
 
 impl ToolSettings {
     /// The size/opacity pair edited by the side panel for `tool`, if it has one.

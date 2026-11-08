@@ -1,9 +1,10 @@
-//! Vector objects: shapes that stay editable on their layer while the document's vector mode is
+//! Vector objects: shapes and text boxes that stay editable on their layer while the document's vector mode is
 //! on. Each keeps its geometry and style plus a cached rasterization, drawn above the layer's
 //! pixels. Turning vector mode off draws them into the pixels for good.
 
 use crate::geom::{PixelRect, Point, RectF};
 use crate::shapes::{self, RasterShape, ShapeKind, ShapePaint};
+use crate::text::{self, TextStyle};
 use std::sync::Arc;
 use tiny_skia::{Path, Pixmap, Transform};
 
@@ -33,11 +34,21 @@ pub enum ShapeGeom {
     Arrow {
         points: Vec<Point>,
     },
+    /// A text box rotated by `angle` degrees around its center. Its colors come from the object's
+    /// paint (see [`ShapePaint::for_text`]). While `auto_size`, the box fits itself to the text;
+    /// a manual resize turns that off for good.
+    Text {
+        rect: RectF,
+        angle: f32,
+        text: String,
+        style: TextStyle,
+        auto_size: bool,
+    },
 }
 
 impl ShapeGeom {
-    /// The shape's path and whether it is closed. `width` is the outline width (arrowheads
-    /// are sized from it).
+    /// The shape's path and whether it is closed (`None` for text, which is laid out instead).
+    /// `width` is the outline width (arrowheads are sized from it).
     pub fn path(&self, width: f32) -> Option<(Path, bool)> {
         match self {
             ShapeGeom::Box { kind, rect, angle, points } => {
@@ -57,6 +68,7 @@ impl ShapeGeom {
             ShapeGeom::Line { a, b } => Some((shapes::line_path(*a, *b)?, false)),
             ShapeGeom::Curve { a, b, c1, c2 } => Some((shapes::curve_path(*a, *c1, *c2, *b)?, false)),
             ShapeGeom::Arrow { points } => Some((shapes::arrow_parts(points, width)?.0, false)),
+            ShapeGeom::Text { .. } => None,
         }
     }
 
@@ -70,6 +82,9 @@ impl ShapeGeom {
 
     /// Renders the shape with `paint`, clipped to a `canvas`-sized document.
     pub fn rasterize(&self, paint: &ShapePaint, canvas: (u32, u32)) -> Option<RasterShape> {
+        if let ShapeGeom::Text { rect, angle, text, style, .. } = self {
+            return text::rasterize_box(text, &paint.text_style(style), *rect, *angle, canvas);
+        }
         let (path, closed) = self.path(paint.width)?;
         shapes::rasterize_with_head(&path, self.head(paint.width).as_ref(), paint, closed, canvas.0, canvas.1)
     }
@@ -84,6 +99,13 @@ impl ShapeGeom {
             ShapeGeom::Line { a, b } => ShapeGeom::Line { a: t(a), b: t(b) },
             ShapeGeom::Curve { a, b, c1, c2 } => ShapeGeom::Curve { a: t(a), b: t(b), c1: t(c1), c2: t(c2) },
             ShapeGeom::Arrow { points } => ShapeGeom::Arrow { points: points.iter().map(t).collect() },
+            ShapeGeom::Text { rect, angle, text, style, auto_size } => ShapeGeom::Text {
+                rect: rect.translate(dx, dy),
+                angle: *angle,
+                text: text.clone(),
+                style: style.clone(),
+                auto_size: *auto_size,
+            },
         }
     }
 }
@@ -137,6 +159,11 @@ impl VectorShape {
 
     /// Whether the visible shape covers `p`, give or take `tol` pixels.
     pub fn hit(&self, p: Point, tol: f32) -> bool {
+        // Text is grabbed by its words, not only by the strokes of its letters.
+        let tol = match &self.geom {
+            ShapeGeom::Text { style, .. } if tol > 0.0 => tol.max(style.size_px() / 2.0),
+            _ => tol,
+        };
         self.raster().is_some_and(|r| r.hit(p, tol))
     }
 
@@ -247,6 +274,65 @@ mod tests {
         let moon = VectorShape::new(ShapeGeom::Box { kind: ShapeKind::Moon, rect, angle: 0.0, points: None }, p, (100, 100));
         assert!(moon.hit(Point::new(6.0, 20.0), 0.0));
         assert!(!moon.hit(Point::new(50.0, 20.0), 0.0), "the bite of the crescent is empty");
+    }
+
+    fn text_object(canvas: (u32, u32)) -> Option<VectorShape> {
+        let family = text::fonts().families().first().cloned()?;
+        let style = TextStyle {
+            family,
+            size_pt: 24.0,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            align: text::TextAlign::Left,
+            color: Color::BLACK,
+            background: None,
+            opacity: 1.0,
+        };
+        let geom = ShapeGeom::Text {
+            rect: RectF::from_xywh(10.0, 10.0, 180.0, 50.0),
+            angle: 0.0,
+            text: "HHHH HHHH".to_owned(),
+            style: style.clone(),
+            auto_size: false,
+        };
+        Some(VectorShape::new(geom, ShapePaint::for_text(&style), canvas))
+    }
+
+    #[test]
+    fn text_object_is_drawn_from_its_content_and_follows_its_paint() {
+        let Some(mut s) = text_object((200, 100)) else { return }; // No fonts (minimal CI image).
+        let dark = |s: &VectorShape| s.raster().unwrap().pixmap.pixels().iter().filter(|c| c.alpha() > 128).count();
+        let before = dark(&s);
+        assert!(before > 50, "the glyphs are drawn");
+        assert_eq!(s.bounds().x0, 10);
+        // Growing the canvas renders it again, with nothing lost.
+        s.rasterize((400, 300));
+        assert_eq!(dark(&s), before);
+        // A background comes from the paint's fill, and covers the whole box.
+        s.paint.fill = shapes::ShapeStyle::Solid;
+        s.rasterize((400, 300));
+        let image = &s.raster().unwrap().pixmap;
+        assert!(image.pixels()[..image.width() as usize * 50].iter().all(|c| c.alpha() == 255));
+        // The paint's opacity fades it.
+        s.paint.opacity = 0.5;
+        s.rasterize((400, 300));
+        assert!(s.raster().unwrap().pixmap.pixels().iter().all(|c| c.alpha() <= 128));
+    }
+
+    #[test]
+    fn text_object_is_grabbed_by_its_words() {
+        let Some(s) = text_object((200, 100)) else { return };
+        // In the gap between the two words, on the text's line.
+        let gap = (20..120).find(|&x| !s.hit(Point::new(x as f32, 30.0), 0.0) && s.hit(Point::new(x as f32 - 3.0, 30.0), 0.0));
+        let gap = Point::new(gap.expect("a gap between letters") as f32 + 1.0, 30.0);
+        assert!(!s.hit(gap, 0.0), "exact tests (the Fill tool) see the letters only");
+        assert!(s.hit(gap, 1.0), "the pointer grabs the words");
+        assert!(!s.hit(Point::new(185.0, 55.0), 1.0), "the empty rest of the box is not part of it");
+        let moved = s.geom.translated(5.0, 7.0);
+        let ShapeGeom::Text { rect, .. } = moved else { panic!() };
+        assert_eq!(rect, RectF::from_xywh(15.0, 17.0, 180.0, 50.0));
     }
 
     #[test]

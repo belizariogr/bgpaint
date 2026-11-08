@@ -110,39 +110,67 @@ impl PaintApp {
         }
     }
 
+    /// The toolbar is put away: it only shows floating over the canvas, on request.
+    pub fn ribbon_hidden(&self) -> bool {
+        self.settings.auto_hide_toolbar || self.ui.ribbon_collapsed
+    }
+
     pub fn ribbon_visible(&self) -> bool {
-        !(self.settings.auto_hide_toolbar || self.ui.ribbon_collapsed) || self.ui.ribbon_revealed
+        !self.ribbon_hidden() || self.ui.ribbon_revealed
     }
 
     pub fn ribbon_panel(&mut self, ui: &mut egui::Ui) {
         let t = self.theme.clone();
-        if !self.ribbon_visible() {
-            // A slim strip with the chevron to bring the toolbar back.
-            egui::Panel::top("ribbon-collapsed")
+        if self.ribbon_hidden() {
+            // A slim strip; the button next to Settings brings the toolbar back, floating.
+            let strip = egui::Panel::top("ribbon-collapsed")
                 .exact_size(10.0)
                 .show_separator_line(false)
                 .frame(egui::Frame::NONE.fill(t.window_bg))
-                .show(ui, |_| {});
+                .show(ui, |_| {})
+                .response
+                .rect;
+            if self.ui.ribbon_revealed {
+                self.floating_ribbon(ui.ctx(), &t, strip);
+            }
             return;
         }
         egui::Panel::top("ribbon").exact_size(RIBBON_HEIGHT).show_separator_line(false).frame(egui::Frame::NONE.fill(t.ribbon_bg)).show(
             ui,
             |ui| {
                 let r = ui.max_rect();
-                ui.painter().hline(r.x_range(), r.bottom() - 0.5, EStroke::new(1.0, t.ribbon_border));
-                let border = EStroke::new(1.0, t.ribbon_border);
-                match self.ui.active_tab_span {
-                    Some(span) => {
-                        ui.painter().hline(r.left()..=span.min + 0.5, r.top() + 0.5, border);
-                        ui.painter().hline(span.max - 0.5..=r.right(), r.top() + 0.5, border);
-                    }
-                    None => {
-                        ui.painter().hline(r.x_range(), r.top() + 0.5, border);
-                    }
-                }
+                self.paint_ribbon_borders(ui, &t, r);
                 self.ribbon_contents(ui, &t, r);
             },
         );
+    }
+
+    /// The top and bottom lines of the toolbar; the active tab opens into the top one.
+    fn paint_ribbon_borders(&self, ui: &egui::Ui, t: &Theme, r: Rect) {
+        let border = EStroke::new(1.0, t.ribbon_border);
+        ui.painter().hline(r.x_range(), r.bottom() - 0.5, border);
+        match self.ui.active_tab_span {
+            Some(span) => {
+                ui.painter().hline(r.left()..=span.min + 0.5, r.top() + 0.5, border);
+                ui.painter().hline(span.max - 0.5..=r.right(), r.top() + 0.5, border);
+            }
+            None => {
+                ui.painter().hline(r.x_range(), r.top() + 0.5, border);
+            }
+        }
+    }
+
+    /// The hidden toolbar in the place it has when docked, but over the canvas, without moving
+    /// it. A click on the canvas puts it away (see `canvas_input`).
+    fn floating_ribbon(&mut self, ctx: &egui::Context, t: &Theme, strip: Rect) {
+        let r = Rect::from_min_size(strip.min, vec2(strip.width(), RIBBON_HEIGHT));
+        egui::Area::new(Id::unique("ribbon-floating")).order(egui::Order::Middle).fixed_pos(r.min).show(ctx, |ui| {
+            ui.allocate_rect(r, Sense::hover());
+            ui.painter().add(egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: t.canvas_shadow }.as_shape(r, 0));
+            ui.painter().rect_filled(r, 0, t.ribbon_bg);
+            self.paint_ribbon_borders(ui, t, r);
+            self.ribbon_contents(ui, t, r);
+        });
     }
 
     fn ribbon_contents(&mut self, ui: &mut egui::Ui, t: &Theme, r: Rect) {

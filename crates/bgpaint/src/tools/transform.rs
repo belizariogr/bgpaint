@@ -67,6 +67,21 @@ impl BoxGeom {
         self.rect.center()
     }
 
+    /// The box with a new size, the point at `anchor_x` (0 to 1) of its top edge staying where
+    /// it is on the canvas. An unrotated box stays on whole pixels, so its text stays sharp.
+    pub fn resized(self, width: f32, height: f32, anchor_x: f32) -> BoxGeom {
+        let r = self.rect;
+        let top = Point::new(r.min.x + r.width() * anchor_x, r.min.y);
+        let fixed = self.to_world(top);
+        let mut out = BoxGeom { rect: RectF::from_xywh(top.x - width * anchor_x, r.min.y, width, height), angle: self.angle };
+        let moved = out.to_world(top);
+        out.rect = out.rect.translate(fixed.x - moved.x, fixed.y - moved.y);
+        if self.angle == 0.0 {
+            out.rect = out.rect.translate(out.rect.min.x.round() - out.rect.min.x, out.rect.min.y.round() - out.rect.min.y);
+        }
+        out
+    }
+
     /// World position of a point given in the unrotated box frame.
     pub fn to_world(self, p: Point) -> Point {
         rotate(p, self.center(), self.angle)

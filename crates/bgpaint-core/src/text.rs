@@ -1,15 +1,38 @@
 //! Text rendering with system fonts (cosmic-text: shaping, wrapping, decorations).
 
 use crate::color::{Color, mul_div255};
+use crate::geom::{Point, RectF};
 use crate::raster;
+use crate::shapes::{self, RasterShape};
 use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, UnderlineStyle, Weight, Wrap};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use tiny_skia::Pixmap;
+
+static FONTS: OnceLock<Mutex<Fonts>> = OnceLock::new();
+
+/// The shared font database (blocks while the system fonts are being scanned). Do not hold it
+/// across document operations: re-rendering a text object takes it too.
+pub fn fonts() -> MutexGuard<'static, Fonts> {
+    let m = FONTS.get_or_init(|| Mutex::new(Fonts::load()));
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextAlign {
     Left,
     Center,
     Right,
+}
+
+impl TextAlign {
+    /// The point of a box's width (0 to 1) that stays put when the box fits itself to its text.
+    pub fn anchor(self) -> f32 {
+        match self {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => 0.5,
+            TextAlign::Right => 1.0,
+        }
+    }
 }
 
 /// Formatting of a text box (Paint applies it to the whole box).
@@ -26,6 +49,8 @@ pub struct TextStyle {
     pub color: Color,
     /// Box background (Paint's "Background fill" uses Color 2).
     pub background: Option<Color>,
+    /// Applied to the finished box, letters and background as one piece (0 to 1).
+    pub opacity: f32,
 }
 
 impl TextStyle {
@@ -123,14 +148,67 @@ pub fn content_height(buffer: &Buffer) -> f32 {
     buffer.layout_runs().map(|r| r.line_top + r.line_height).fold(buffer.metrics().line_height, f32::max)
 }
 
-/// Renders `buffer` into a `width`×`height` pixmap, with the optional background fill.
+/// Space kept between the sides of a text box and its text (and caret).
+pub const BOX_PADDING: f32 = 4.0;
+
+/// Width the text is wrapped to in a box `box_width` pixels wide.
+pub fn layout_width(box_width: f32) -> f32 {
+    (box_width - 2.0 * BOX_PADDING).max(8.0)
+}
+
+/// Measures `buffer` and lays it out without wrapping: the size of a box that just holds it.
+pub fn fit_buffer(fonts: &mut Fonts, buffer: &mut Buffer) -> (f32, f32) {
+    buffer.set_size(None, None);
+    buffer.shape_until_scroll(&mut fonts.system, false);
+    let natural = buffer.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
+    // The extra pixel keeps rounding from wrapping the longest line.
+    let width = (natural.ceil() + 1.0).max(buffer.metrics().line_height.ceil());
+    buffer.set_size(Some(width), None);
+    buffer.shape_until_scroll(&mut fonts.system, false);
+    (width + 2.0 * BOX_PADDING, (content_height(buffer) + 4.0).ceil())
+}
+
+/// The size of a box that just holds `text` (see [`fit_buffer`]).
+pub fn fit_box(text: &str, style: &TextStyle) -> (f32, f32) {
+    let mut f = fonts();
+    let mut buffer = f.buffer(text, style, 1.0);
+    fit_buffer(&mut f, &mut buffer)
+}
+
+/// Puts text rendered by [`render`] in the box `rect` rotated by `angle` degrees, clipped to the
+/// canvas. Text taller than the box goes on below it.
+pub fn place_box(pixmap: &Pixmap, rect: RectF, angle: f32, canvas: (u32, u32)) -> Option<RasterShape> {
+    let scale = rect.height() / rect.height().ceil().max(1.0);
+    let full = RectF { min: rect.min, max: Point::new(rect.max.x, rect.min.y + pixmap.height() as f32 * scale) };
+    shapes::render_box(pixmap, full, rect.center(), angle, canvas)
+}
+
+/// Lays out `text` in the box `rect` rotated by `angle` degrees and renders it, clipped to the
+/// canvas.
+pub fn rasterize_box(text: &str, style: &TextStyle, rect: RectF, angle: f32, canvas: (u32, u32)) -> Option<RasterShape> {
+    let pixmap = {
+        let mut f = fonts();
+        let mut buffer = f.buffer(text, style, layout_width(rect.width()));
+        render(&mut f, &mut buffer, style, (rect.width().ceil() as u32).max(1), (rect.height().ceil() as u32).max(1))
+    };
+    place_box(&pixmap, rect, angle, canvas)
+}
+
+/// Renders `buffer` for a `width`×`height` box, inside its side padding, with the optional
+/// background fill. Text taller than the box makes the pixmap taller; the fill stays in the box.
 pub fn render(fonts: &mut Fonts, buffer: &mut Buffer, style: &TextStyle, width: u32, height: u32) -> Pixmap {
-    let mut out = raster::pixmap(width, height);
-    if let Some(bg) = style.background {
-        out.fill(bg.to_skia());
+    let full = height.max(content_height(buffer).ceil() as u32);
+    let mut out = raster::pixmap(width, full);
+    if let Some(bg) = style.background
+        && let Some(area) = tiny_skia::Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
+    {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(bg.to_skia());
+        out.fill_rect(area, &paint, tiny_skia::Transform::identity(), None);
     }
     let c = style.color;
-    let (w, h) = (width as i32, height as i32);
+    let (w, h) = (width as i32, full as i32);
+    let pad = BOX_PADDING as i32;
     let stride = width as usize * 4;
     let data = out.data_mut();
     buffer.draw(&mut fonts.system, &mut fonts.cache, cosmic_text::Color::rgba(c.r, c.g, c.b, c.a), |x, y, rw, rh, color| {
@@ -141,6 +219,7 @@ pub fn render(fonts: &mut Fonts, buffer: &mut Buffer, style: &TextStyle, width: 
         let src =
             [mul_div255(u16::from(color.r()), a), mul_div255(u16::from(color.g()), a), mul_div255(u16::from(color.b()), a), color.a()];
         let inv = 255 - a;
+        let x = x + pad;
         for py in y.max(0)..(y + rh as i32).min(h) {
             for px in x.max(0)..(x + rw as i32).min(w) {
                 let i = py as usize * stride + px as usize * 4;
@@ -150,6 +229,7 @@ pub fn render(fonts: &mut Fonts, buffer: &mut Buffer, style: &TextStyle, width: 
             }
         }
     });
+    shapes::fade(&mut out, style.opacity);
     out
 }
 
@@ -168,6 +248,7 @@ mod tests {
             align: TextAlign::Left,
             color: Color::BLACK,
             background: Some(Color::WHITE),
+            opacity: 1.0,
         }
     }
 
@@ -184,6 +265,19 @@ mod tests {
         let p = render(&mut fonts, &mut b, &s, 120, h.ceil() as u32);
         let dark = p.pixels().iter().filter(|c| c.red() < 128).count();
         assert!(dark > 50, "some glyph pixels must be drawn");
+        // A box fitted to the text holds it in one line, however long.
+        let (fit_w, fit_h) = fit_box("Hello world, this wraps", &s);
+        assert!(fit_w > 120.0, "{fit_w}");
+        assert_eq!(content_height(&fonts.buffer("Hello world, this wraps", &s, layout_width(fit_w))), s.metrics().line_height);
+        assert_eq!(fit_h, s.metrics().line_height + 4.0);
         assert!(p.pixels().iter().all(|c| c.alpha() == 255), "background fill covers the box");
+        // Text taller than the box goes on below it; the fill stays in the box.
+        let p = render(&mut fonts, &mut b, &s, 120, 10);
+        assert_eq!(p.height(), h.ceil() as u32);
+        assert!(p.pixel(0, 5).unwrap().alpha() == 255 && p.pixel(0, p.height() - 1).unwrap().alpha() == 0);
+        // Opacity fades letters and background together.
+        let half = TextStyle { opacity: 0.5, ..s };
+        let p = render(&mut fonts, &mut b, &half, 120, h.ceil() as u32);
+        assert!(p.pixels().iter().all(|c| (127..=128).contains(&c.alpha())));
     }
 }
