@@ -8,7 +8,7 @@
       <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
       <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="paint" gradientUnits="userSpaceOnUse" x1="70" y1="0" x2="160" y2="0">
+    <linearGradient id="paint" gradientUnits="userSpaceOnUse" x1="66" y1="0" x2="130" y2="0">
       <stop offset="0" stop-color="#FF4D6D"/>
       <stop offset="0.3" stop-color="#FFB020"/>
       <stop offset="0.62" stop-color="#22C55E"/>
@@ -35,9 +35,9 @@
     <rect x="46" y="66" width="164" height="128" rx="20" fill="#3B1293" opacity="0.30"/>
     <rect x="46" y="60" width="164" height="128" rx="20" fill="#FFFFFF"/>
     <!-- Paint stroke -->
-    <path d="M74 150 C 88 118, 104 116, 112 136 S 140 150, 156 116" fill="none" stroke="url(#paint)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M68 156 C 78 126, 92 124, 100 142 S 120 158, 128 138" fill="none" stroke="url(#paint)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
     <!-- Brush, tip resting on the end of the stroke -->
-    <g transform="translate(160 110) rotate(40)">
+    <g transform="translate(128 140) rotate(40) scale(1.35)">
       <!-- shadow -->
       <g transform="translate(4 3)" fill="#3B1293" opacity="0.18">
         <path d="M0 2 C-9 -10 -8 -26 -8 -30 H8 C8 -26 9 -10 0 2 Z"/>
@@ -46,12 +46,16 @@
       </g>
       <!-- handle -->
       <path d="M-8 -46 L-5.5 -104 A5.5 5.5 0 0 1 5.5 -104 L8 -46 Z" fill="url(#handle)"/>
+      <!-- Where the handle meets the bristles at small sizes. Elements marked data-large-only are
+           left out of the icons up to 48 px (see script/generate-app-icons), where the white
+           ferrule splits the brush in two. -->
+      <rect x="-8" y="-47" width="16" height="18" fill="url(#handle)"/>
       <!-- ferrule -->
-      <rect x="-8.5" y="-47" width="17" height="18" rx="2" fill="url(#ferrule)"/>
-      <rect x="-8.5" y="-41" width="17" height="2.2" fill="#ADA3CC"/>
+      <rect data-large-only="true" x="-8.5" y="-47" width="17" height="18" rx="2" fill="url(#ferrule)"/>
+      <rect data-large-only="true" x="-8.5" y="-41" width="17" height="2.2" fill="#ADA3CC"/>
       <!-- bristles dipped in paint -->
       <path d="M0 2 C-9 -10 -8 -26 -8 -30 H8 C8 -26 9 -10 0 2 Z" fill="#8B5CF6"/>
-      <path d="M0 2 C-3 -8 -3 -20 -2.5 -30 H2 C1 -20 2 -8 0 2 Z" fill="#FFFFFF" opacity="0.25"/>
+      <path data-large-only="true" d="M0 2 C-3 -8 -3 -20 -2.5 -30 H2 C1 -20 2 -8 0 2 Z" fill="#FFFFFF" opacity="0.25"/>
     </g>
     <!-- BG monogram as the painting's signature -->
     <g transform="translate(182 166)">
