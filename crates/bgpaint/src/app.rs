@@ -203,6 +203,9 @@ impl PaintApp {
             app.open_path(&cc.egui_ctx, path);
         }
         app.instance = instance.map(|l| l.serve(&cc.egui_ctx, app.files.sender()));
+        // The Text tool starts with the font last picked.
+        app.text_settings.family = app.settings.text_family.clone();
+        app.text_settings.size_pt = app.settings.text_size_pt.clamp(1.0, crate::tools::MAX_FONT_SIZE);
         // The first document starts in the vector mode last picked, with the Pointer in hand.
         let vector_mode = app.settings.vector_mode;
         app.doc.set_vector_mode(vector_mode);

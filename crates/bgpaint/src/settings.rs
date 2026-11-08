@@ -55,6 +55,10 @@ pub struct Settings {
     pub language: Option<String>,
     pub rotate_default: RotateDefault,
     pub flip_default: FlipDefault,
+    /// The font last picked for the Text tool (`None`: a default of the system).
+    pub text_family: Option<String>,
+    /// The font size last picked for the Text tool, in points.
+    pub text_size_pt: f32,
 }
 
 impl Default for Settings {
@@ -77,6 +81,8 @@ impl Default for Settings {
             language: None,
             rotate_default: RotateDefault::default(),
             flip_default: FlipDefault::default(),
+            text_family: None,
+            text_size_pt: 11.0,
         }
     }
 }
@@ -130,5 +136,6 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"show_grid": true, "bogus": 1}"#).unwrap();
         assert!(s.show_grid);
         assert!(s.show_status_bar);
+        assert_eq!((s.text_family, s.text_size_pt), (None, 11.0));
     }
 }

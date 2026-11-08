@@ -1,7 +1,10 @@
 //! The Text tool: an editable text box (caret, selection, clipboard, IME) rendered with system
-//! fonts, committed into the layer when the user clicks outside or switches tools.
+//! fonts, committed when the user clicks outside or switches tools: into the layer's pixels, or
+//! in vector mode as a vector object that a later click opens for editing again.
 
+use super::Tool;
 use super::interaction::Active;
+use super::shape::Lifted;
 use super::transform::{BoxGeom, BoxHit};
 use crate::app::PaintApp;
 use crate::canvas::view::View;
@@ -9,27 +12,21 @@ use crate::theme::Theme;
 use bgpaint_core::cosmic_text::{Action, Buffer, Cursor, Edit, Editor, Motion, Selection};
 use bgpaint_core::document::ActivePreview;
 use bgpaint_core::geom::{PixelRect, Point, RectF};
+use bgpaint_core::history::Change;
 use bgpaint_core::raster;
-use bgpaint_core::shapes::RasterShape;
+use bgpaint_core::shapes::{RasterShape, ShapePaint};
+pub use bgpaint_core::text::fonts;
 use bgpaint_core::text::{self, Fonts, TextAlign, TextStyle};
 use bgpaint_core::tiny_skia::Pixmap;
+use bgpaint_core::vector::{ShapeGeom, VectorShape};
 use egui::{Color32, Key, PointerButton, Pos2, Stroke};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
-
-static FONTS: OnceLock<Mutex<Fonts>> = OnceLock::new();
 
 /// Starts scanning system fonts in the background so the text tool is instant later.
 pub fn preload_fonts() {
     std::thread::spawn(|| {
         drop(fonts());
     });
-}
-
-/// The shared font database (blocks only if the background scan has not finished yet).
-pub fn fonts() -> MutexGuard<'static, Fonts> {
-    let m = FONTS.get_or_init(|| Mutex::new(Fonts::load()));
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Text formatting chosen in the text toolbar.
@@ -43,6 +40,8 @@ pub struct TextSettings {
     pub strikethrough: bool,
     pub align: TextAlign,
     pub background: bool,
+    /// The side panel's opacity slider (0 to 1).
+    pub opacity: f32,
 }
 
 impl Default for TextSettings {
@@ -56,6 +55,7 @@ impl Default for TextSettings {
             strikethrough: false,
             align: TextAlign::Left,
             background: false,
+            opacity: 1.0,
         }
     }
 }
@@ -71,6 +71,9 @@ pub struct TextOp {
     pub geom: BoxGeom,
     editor: Editor<'static>,
     style: TextStyle,
+    /// The style the toolbar and colors gave last. A change only overrides the colors that
+    /// changed, so restyling a reopened object keeps its own.
+    applied: TextStyle,
     raster: Option<RasterShape>,
     drag: Option<TextDrag>,
     canvas: (u32, u32),
@@ -78,6 +81,12 @@ pub struct TextOp {
     undo: Vec<String>,
     /// Time, position and count of the last click inside the box (double/triple click).
     last_click: Option<(Instant, Point, u8)>,
+    /// Becomes a vector object when committed, instead of pixels.
+    vector: bool,
+    lifted: Option<Lifted>,
+    /// The box fits itself to the text; a manual resize turns this off for good. A new box gets
+    /// it when the click that creates it ends without dragging out a size.
+    auto_size: bool,
 }
 
 impl ActivePreview for TextOp {
@@ -90,6 +99,10 @@ impl ActivePreview for TextOp {
             raster::draw_over(region, &r.pixmap, r.x - rect.x0, r.y - rect.y0, 1.0);
         }
     }
+
+    fn above_objects(&self) -> bool {
+        self.vector
+    }
 }
 
 impl TextOp {
@@ -100,19 +113,19 @@ impl TextOp {
     /// Re-lays out and re-renders the box; returns the area to redraw.
     fn update(&mut self, fonts: &mut Fonts) -> PixelRect {
         let before = self.bounds();
-        let width = self.geom.rect.width().max(8.0);
+        if self.auto_size {
+            let (w, h) = self.editor.with_buffer_mut(|b| text::fit_buffer(fonts, b));
+            self.geom = self.geom.resized(w, h, self.style.align.anchor());
+        }
+        let width = text::layout_width(self.geom.rect.width());
         self.editor.with_buffer_mut(|b| {
             b.set_size(Some(width), None);
             b.shape_until_scroll(&mut fonts.system, false);
         });
-        let content = self.editor.with_buffer(text::content_height);
-        if content + 4.0 > self.geom.rect.height() {
-            self.geom.rect.max.y = self.geom.rect.min.y + content + 4.0;
-        }
         let (w, h) = (self.geom.rect.width().ceil() as u32, self.geom.rect.height().ceil() as u32);
         let style = self.style.clone();
         let pixmap = self.editor.with_buffer_mut(|b| text::render(fonts, b, &style, w.max(1), h.max(1)));
-        self.raster = super::select::render_floating(&pixmap, &self.geom, self.canvas);
+        self.raster = text::place_box(&pixmap, self.geom.rect, self.geom.angle, self.canvas);
         before.union(&self.bounds())
     }
 
@@ -138,7 +151,7 @@ impl TextOp {
         let l = self.geom.to_local(p);
         let content = self.editor.with_buffer(text::content_height);
         let y = (l.y - self.geom.rect.min.y).clamp(0.0, (content - 1.0).max(0.0));
-        ((l.x - self.geom.rect.min.x).round() as i32, y as i32)
+        ((l.x - self.geom.rect.min.x - text::BOX_PADDING).round() as i32, y as i32)
     }
 
     fn snapshot(&mut self) {
@@ -165,10 +178,21 @@ impl PaintApp {
             align: s.align,
             color: self.colors.primary,
             background: s.background.then_some(self.colors.secondary),
+            opacity: s.opacity,
         }
     }
 
-    pub fn text_pointer_down(&mut self, p: Point, _pos: Pos2, button: PointerButton, modifiers: egui::Modifiers) {
+    /// Saves the current font and size as the ones the next start uses, when they changed.
+    pub fn remember_text_font(&mut self) {
+        let s = &self.text_settings;
+        if self.settings.text_family != s.family || self.settings.text_size_pt != s.size_pt {
+            self.settings.text_family = s.family.clone();
+            self.settings.text_size_pt = s.size_pt;
+            self.settings.save();
+        }
+    }
+
+    pub fn text_pointer_down(&mut self, p: Point, pos: Pos2, button: PointerButton, modifiers: egui::Modifiers) {
         let tol = 6.0 / self.view.scale();
         if let Active::Text(op) = &mut self.active
             && button == PointerButton::Primary
@@ -208,7 +232,31 @@ impl PaintApp {
                 return;
             }
         }
+        // A click outside ends the editing: in vector mode the Pointer takes over from here.
+        let editing = matches!(self.active, Active::Text(_));
         self.commit_interaction();
+        if editing && self.doc.vector_mode() {
+            self.hand_over_to_pointer();
+            self.shape_pointer_down(p, pos, button, modifiers);
+            return;
+        }
+        // In vector mode a click on a text object opens it again.
+        let target =
+            self.doc.object_at(p, tol).filter(|_| button == PointerButton::Primary && self.doc.vector_mode()).and_then(|(l, i)| {
+                let o = &self.doc.layers()[l].objects[i];
+                match &o.geom {
+                    ShapeGeom::Text { rect, angle, text, style, auto_size } => {
+                        Some((l, i, BoxGeom { rect: *rect, angle: *angle }, text.clone(), o.paint.text_style(style), *auto_size))
+                    }
+                    _ => None,
+                }
+            });
+        if let Some((layer, index, geom, words, style, auto_size)) = target
+            && let Some(lifted) = self.take_object_for_edit(layer, index)
+        {
+            self.open_text_object(geom, &words, style, auto_size, Some(lifted), p);
+            return;
+        }
         let mut f = fonts();
         let style = self.text_style(&f);
         let buffer = f.buffer("", &style, 200.0);
@@ -216,6 +264,7 @@ impl PaintApp {
         let mut op = TextOp {
             geom: BoxGeom::new(RectF::from_xywh(p.x, p.y, 1.0, 1.0)),
             editor,
+            applied: style.clone(),
             style,
             raster: None,
             drag: Some(TextDrag::Create { start: p }),
@@ -223,9 +272,68 @@ impl PaintApp {
             blink: Instant::now(),
             undo: Vec::new(),
             last_click: None,
+            vector: self.doc.vector_mode(),
+            lifted: None,
+            auto_size: false,
         };
         op.update(&mut f);
         self.active = Active::Text(op);
+    }
+
+    /// Opens a text object for editing with the Text tool, the caret at `p`. The toolbar shows
+    /// the object's formatting.
+    pub(super) fn open_text_object(
+        &mut self,
+        geom: BoxGeom,
+        words: &str,
+        style: TextStyle,
+        auto_size: bool,
+        lifted: Option<Lifted>,
+        p: Point,
+    ) {
+        self.text_settings = TextSettings {
+            family: Some(style.family.clone()),
+            size_pt: style.size_pt,
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            strikethrough: style.strikethrough,
+            align: style.align,
+            background: style.background.is_some(),
+            opacity: style.opacity,
+        };
+        self.set_tool(Tool::Text);
+        let mut f = fonts();
+        let applied = self.text_style(&f);
+        let buffer = f.buffer(words, &style, text::layout_width(geom.rect.width()));
+        let mut op = TextOp {
+            geom,
+            editor: Editor::new(buffer),
+            style,
+            applied,
+            raster: None,
+            drag: Some(TextDrag::Select),
+            canvas: (self.doc.width(), self.doc.height()),
+            blink: Instant::now(),
+            undo: Vec::new(),
+            last_click: Some((Instant::now(), p, 1)),
+            vector: true,
+            lifted,
+            auto_size,
+        };
+        let d = op.update(&mut f);
+        self.preview_dirty.add(d);
+        let (x, y) = op.local(p);
+        op.editor.action(&mut f.system, Action::Click { x, y });
+        self.active = Active::Text(op);
+    }
+
+    /// Finished text hands over to the Pointer (only vector mode has one).
+    fn hand_over_to_pointer(&mut self) {
+        if self.doc.vector_mode() {
+            self.set_tool(Tool::Shape);
+            self.tools.vector_pointer = true;
+        }
     }
 
     pub fn text_pointer_move(&mut self, op: &mut TextOp, p: Point) {
@@ -235,6 +343,10 @@ impl PaintApp {
                 op.geom.rect = RectF::from_points(start, p);
             }
             Some(TextDrag::Box(hit, start, orig)) => {
+                // Sizing the box by hand ends its automatic sizing.
+                if matches!(hit, BoxHit::Handle(_)) {
+                    op.auto_size = false;
+                }
                 op.geom = orig.drag(hit, start, p, false);
                 let d = op.update(&mut f);
                 self.preview_dirty.add(d);
@@ -251,8 +363,10 @@ impl PaintApp {
         if let Some(TextDrag::Create { .. }) = op.drag {
             let line = op.style.metrics().line_height;
             let r = op.geom.rect;
-            // A click (or a tiny drag) creates a default-sized box.
-            let w = if r.width() < 16.0 { 240.0 } else { r.width() };
+            // A click (or a tiny drag) creates a box that fits itself to the text; dragging out
+            // a size creates one of that size.
+            op.auto_size = r.width() < 16.0 && r.height() < line;
+            let w = if op.auto_size { 1.0 } else { r.width().max(16.0) };
             let h = if r.height() < line { line + 4.0 } else { r.height() };
             op.geom.rect = RectF::from_xywh(r.min.x, r.min.y, w, h);
             let mut f = fonts();
@@ -265,11 +379,34 @@ impl PaintApp {
     pub fn commit_text(&mut self, op: TextOp) {
         self.preview_dirty.add(op.bounds());
         if op.text().trim().is_empty() && op.style.background.is_none() {
+            // A reopened object left with no words is deleted.
+            if let Some(l) = op.lifted {
+                self.history.push("delete text", vec![Change::document(l.before)]);
+            }
+            return;
+        }
+        if op.vector {
+            let geom = ShapeGeom::Text {
+                rect: op.geom.rect,
+                angle: op.geom.angle,
+                text: op.text(),
+                style: op.style.clone(),
+                auto_size: op.auto_size,
+            };
+            let shape = VectorShape::with_raster(geom, ShapePaint::for_text(&op.style), op.raster);
+            self.place_object(shape, op.lifted, "text");
             return;
         }
         let Some(r) = &op.raster else { return };
         let change = self.doc.edit_active(r.bounds(), |layer| raster::draw_over(layer, &r.pixmap, r.x, r.y, 1.0));
         self.history.push_one("text", change);
+    }
+
+    /// Drops the text being edited; a reopened object goes back unchanged.
+    pub fn cancel_text(&mut self, op: TextOp) {
+        if let Some(l) = op.lifted {
+            self.place_object(l.original.clone(), Some(l), "text");
+        }
     }
 
     /// Applies toolbar or color changes to the open text box.
@@ -278,8 +415,16 @@ impl PaintApp {
             return;
         }
         let mut f = fonts();
-        let style = self.text_style(&f);
+        let new = self.text_style(&f);
         if let Active::Text(op) = &mut self.active {
+            let mut style = new.clone();
+            if new.color == op.applied.color {
+                style.color = op.style.color;
+            }
+            if new.background == op.applied.background {
+                style.background = op.style.background;
+            }
+            op.applied = new;
             op.restyle(&mut f, style);
             let d = op.update(&mut f);
             self.preview_dirty.add(d);
@@ -288,6 +433,10 @@ impl PaintApp {
 
     pub fn text_cursor(&self, pos: Pos2) -> egui::CursorIcon {
         if let Active::Text(op) = &self.active {
+            // A drag keeps the cursor of what it started on, wherever the pointer goes.
+            if let Some(TextDrag::Box(hit, _, orig)) = &op.drag {
+                return hit.cursor(orig.angle);
+            }
             let p = self.view.to_canvas(pos);
             let tol = 6.0 / self.view.scale();
             let local = op.geom.to_local(p);
@@ -478,6 +627,7 @@ impl PaintApp {
         }
         if commit {
             self.commit_interaction();
+            self.hand_over_to_pointer();
         }
         // Tell the platform where the caret is, for input methods.
         if let Active::Text(op) = &self.active {
@@ -499,8 +649,9 @@ impl PaintApp {
 fn caret_rect(op: &TextOp, view: &View) -> Option<egui::Rect> {
     let (x, y) = op.editor.cursor_position()?;
     let lh = op.style.metrics().line_height;
-    let top = op.geom.to_world(Point::new(op.geom.rect.min.x + x as f32, op.geom.rect.min.y + y as f32));
-    let bottom = op.geom.to_world(Point::new(op.geom.rect.min.x + x as f32, op.geom.rect.min.y + y as f32 + lh));
+    let left = op.geom.rect.min.x + text::BOX_PADDING + x as f32;
+    let top = op.geom.to_world(Point::new(left, op.geom.rect.min.y + y as f32));
+    let bottom = op.geom.to_world(Point::new(left, op.geom.rect.min.y + y as f32 + lh));
     Some(egui::Rect::from_two_pos(view.to_screen(top), view.to_screen(bottom)))
 }
 
@@ -512,7 +663,7 @@ pub fn paint_overlay(op: &TextOp, view: &View, painter: &egui::Painter, t: &Them
         return;
     }
     op.geom.paint(view, painter, t, true);
-    let origin = op.geom.rect.min;
+    let origin = Point::new(op.geom.rect.min.x + text::BOX_PADDING, op.geom.rect.min.y);
     let lh = op.style.metrics().line_height;
     if let Some((a, b)) = op.editor.selection_bounds() {
         op.editor.with_buffer(|buf: &Buffer| {
@@ -527,7 +678,8 @@ pub fn paint_overlay(op: &TextOp, view: &View, painter: &egui::Painter, t: &Them
     }
     let on = (op.blink.elapsed().as_millis() / 530).is_multiple_of(2);
     if on && let Some(r) = caret_rect(op, view) {
-        painter.line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.5, if t.dark { Color32::WHITE } else { Color32::BLACK }));
+        let c = op.style.color;
+        painter.line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.5, Color32::from_rgb(c.r, c.g, c.b)));
     }
     painter.ctx().request_repaint_after(std::time::Duration::from_millis(530));
 }

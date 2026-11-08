@@ -234,6 +234,7 @@ impl PaintApp {
         match active {
             Active::Select(op) => self.cancel_selection(op),
             Active::Shape(op) => self.cancel_shape(op),
+            Active::Text(op) => self.cancel_text(op),
             _ => {}
         }
     }

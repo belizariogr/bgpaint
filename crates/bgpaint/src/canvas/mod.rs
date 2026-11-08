@@ -8,7 +8,7 @@ pub mod view;
 use crate::app::PaintApp;
 use crate::theme::Theme;
 use crate::tools::interaction::{Active, Handle};
-use crate::tools::{MAX_SIZE, Tool};
+use crate::tools::{MAX_FONT_SIZE, MAX_SIZE, Tool};
 use crate::ui::icons::regular as ic;
 use crate::ui::widgets;
 use bgpaint_core::geom::Point;
@@ -360,7 +360,23 @@ impl PaintApp {
     /// The floating panel with the size and opacity sliders (left of the canvas).
     fn size_panel(&mut self, ui: &mut egui::Ui, t: &Theme, viewport: Rect) {
         let tool = self.tool;
-        let Some(mut stroke) = self.tools.stroke(tool) else { return };
+        // With the Text tool, or a text object picked up, the size is the font's.
+        let text_tool = tool == Tool::Text;
+        let picked = if tool == Tool::Shape { self.picked_text() } else { None };
+        let s = &self.text_settings;
+        let current = if picked.is_some() {
+            picked
+        } else if text_tool {
+            Some((s.size_pt, s.opacity))
+        } else {
+            self.tools.stroke(tool).map(|s| (s.size, s.opacity))
+        };
+        let Some((mut size, mut opacity)) = current else { return };
+        let (before, max_size, unit) = (
+            (size, opacity),
+            if text_tool || picked.is_some() { MAX_FONT_SIZE } else { MAX_SIZE },
+            if text_tool || picked.is_some() { "pt" } else { "px" },
+        );
         let h = (viewport.height() - 120.0).clamp(160.0, 720.0);
         let panel_h = (h - 12.0) / 2.0;
         let top = viewport.center().y - h / 2.0;
@@ -369,7 +385,7 @@ impl PaintApp {
             Rect::from_min_size(pos2(x, top), vec2(38.0, panel_h)),
             Rect::from_min_size(pos2(x, top + panel_h + 12.0), vec2(38.0, panel_h)),
         ];
-        let mut changed = false;
+        let mut released = false;
         for (i, r) in rects.iter().enumerate() {
             // Each panel lives in its own area so the canvas below never sees its clicks.
             egui::Area::new(Id::unique(("size-panel-area", i))).order(egui::Order::Middle).fixed_pos(r.min).show(ui.ctx(), |ui| {
@@ -378,29 +394,41 @@ impl PaintApp {
                 let glyph = if i == 0 { ic::SIZE } else { ic::DROP };
                 widgets::paint_icon(ui.painter(), pos2(r.center().x, r.top() + 18.0), glyph, 16.0, t.text);
                 let slider_rect = Rect::from_min_max(pos2(r.left(), r.top() + 32.0), pos2(r.right(), r.bottom() - 6.0));
-                let mut v = if i == 0 { ((stroke.size - 1.0) / (MAX_SIZE - 1.0)).sqrt() } else { stroke.opacity };
+                let mut v = if i == 0 { ((size - 1.0) / (max_size - 1.0)).sqrt() } else { opacity };
                 let resp = widgets::slider(ui, t, slider_rect, Id::unique(("size-panel", i)), &mut v, true);
                 if resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on() {
                     if i == 0 {
-                        stroke.size = (1.0 + v * v * (MAX_SIZE - 1.0)).round();
+                        size = (1.0 + v * v * (max_size - 1.0)).round();
                     } else {
-                        stroke.opacity = (v * 100.0).round() / 100.0;
+                        opacity = (v * 100.0).round() / 100.0;
                     }
-                    changed = true;
                 }
+                released |= resp.drag_stopped() || resp.clicked();
                 if resp.hovered() || resp.dragged() {
-                    let text =
-                        if i == 0 { format!("{} px", stroke.size as i32) } else { format!("{}%", (stroke.opacity * 100.0).round() as i32) };
+                    let text = if i == 0 { format!("{size} {unit}") } else { format!("{}%", (opacity * 100.0).round() as i32) };
                     resp.on_hover_text_at_pointer(text);
                 }
             });
         }
-        if changed && let Some(s) = self.tools.stroke_mut(tool) {
-            *s = stroke;
-            if tool == Tool::Shape {
+        if (size, opacity) != before {
+            if picked.is_some() {
+                self.set_picked_text(size, opacity);
+            } else if text_tool {
+                self.text_settings.size_pt = size;
+                self.text_settings.opacity = opacity;
+                self.restyle_text();
+            } else if let Some(s) = self.tools.stroke_mut(tool) {
+                s.size = size;
+                s.opacity = opacity;
+            }
+            if tool == Tool::Shape && picked.is_none() {
                 // Redraw a shape still being edited with the new width or opacity.
                 self.on_shape_style_changed();
             }
+        }
+        // Saved when the slider is let go, not on every step of the drag.
+        if text_tool && released {
+            self.remember_text_font();
         }
     }
 

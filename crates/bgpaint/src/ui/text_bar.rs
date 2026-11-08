@@ -3,9 +3,9 @@
 use super::icons::regular as ic;
 use super::widgets::{self, IconButton};
 use crate::app::PaintApp;
-use crate::tools::Tool;
+use crate::tools::{MAX_FONT_SIZE, Tool};
 use bgpaint_core::text::TextAlign;
-use egui::{Align2, Id, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, Color32, Id, Rect, Sense, Stroke, pos2, vec2};
 
 const SIZES: [f32; 16] = [8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 36.0, 48.0, 72.0];
 
@@ -15,6 +15,13 @@ enum Popup {
     None,
     Font,
     Size,
+}
+
+/// The size in a font size field being typed, to a tenth of a point (`None` while it is not a
+/// usable number yet).
+fn parse_font_size(text: &str) -> Option<f32> {
+    let v = text.trim().replace(',', ".").parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 1.0)?;
+    Some((v.min(MAX_FONT_SIZE) * 10.0).round() / 10.0)
 }
 
 impl PaintApp {
@@ -27,7 +34,10 @@ impl PaintApp {
         let popup_id = Id::unique("text-bar-popup");
         let mut popup: Popup = ctx.data(|d| d.get_temp(popup_id)).unwrap_or_default();
         let top = crate::ui::menubar::menubar_height() + if self.ribbon_visible() { crate::ui::ribbon::RIBBON_HEIGHT } else { 10.0 } + 4.0;
-        let width = 710.0;
+        // The controls before the Background fill check box, its box and label, the margins.
+        let label =
+            ctx.fonts_mut(|f| f.layout_no_wrap(tr.background_fill.to_owned(), egui::FontId::proportional(14.0), Color32::WHITE).size().x);
+        let width = 544.0 + 30.0 + label + 16.0 + 6.0;
         let screen = ctx.content_rect();
         let left = (screen.center().x - width / 2.0).max(screen.left() + 8.0);
         let mut changed = false;
@@ -56,25 +66,50 @@ impl PaintApp {
                     popup = if popup == Popup::Font { Popup::None } else { Popup::Font };
                 }
                 x = font_rect.right() + 8.0;
-                // Font size
+                // Font size: a number typed in the field, or one from the list behind the chevron.
                 size_rect = Rect::from_min_size(pos2(x, cy - 15.0), vec2(64.0, 30.0));
-                let resp = ui.interact(size_rect, Id::unique("tb-size"), Sense::click());
-                ui.painter().rect(
-                    size_rect,
-                    widgets::RADIUS,
-                    if resp.hovered() { t.button_hover } else { t.input_bg },
-                    Stroke::new(1.0, t.input_border),
-                    egui::StrokeKind::Inside,
-                );
-                widgets::label(
-                    ui.painter(),
-                    pos2(size_rect.left() + 10.0, cy),
-                    Align2::LEFT_CENTER,
-                    &format!("{}", self.text_settings.size_pt),
-                    13.0,
-                    t.text,
-                );
-                widgets::paint_chevron(ui.painter(), pos2(size_rect.right() - 14.0, cy), t.text, 12.0);
+                let chevron = Rect::from_min_max(pos2(size_rect.right() - 26.0, size_rect.top()), size_rect.max);
+                ui.painter().rect(size_rect, widgets::RADIUS, t.input_bg, Stroke::new(1.0, t.input_border), egui::StrokeKind::Inside);
+                let field =
+                    Rect::from_min_max(pos2(size_rect.left() + 8.0, size_rect.top()), pos2(chevron.left(), size_rect.bottom() - 4.0));
+                let size_id = Id::unique("tb-size-field");
+                let buf_id = size_id.with("buf");
+                let mut text = if ui.memory(|m| m.has_focus(size_id)) {
+                    ui.data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_default()
+                } else {
+                    self.text_settings.size_pt.to_string()
+                };
+                let edit = egui::TextEdit::singleline(&mut text)
+                    .id(size_id)
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::Margin::ZERO)
+                    .font(egui::FontId::proportional(13.0))
+                    .text_color(t.text)
+                    .align(Align2::LEFT_CENTER)
+                    .min_size(field.size())
+                    .desired_width(field.width());
+                let resp = ui.new_child(egui::UiBuilder::new().max_rect(field)).add(edit);
+                if resp.gained_focus()
+                    && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), size_id)
+                {
+                    // Typing replaces the old size.
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::select_all_str(&text)));
+                    state.store(ui.ctx(), size_id);
+                }
+                if resp.changed()
+                    && let Some(size) = parse_font_size(&text)
+                    && size != self.text_settings.size_pt
+                {
+                    self.text_settings.size_pt = size;
+                    changed = true;
+                }
+                ui.data_mut(|d| d.insert_temp(buf_id, text));
+                resp.on_hover_text(tr.font_size);
+                let resp = ui.interact(chevron, Id::unique("tb-size"), Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(chevron.shrink(2.0), widgets::RADIUS, t.button_hover);
+                }
+                widgets::paint_chevron(ui.painter(), chevron.center(), t.text, 12.0);
                 if resp.on_hover_text(tr.font_size).clicked() {
                     popup = if popup == Popup::Size { Popup::None } else { Popup::Size };
                 }
@@ -160,6 +195,7 @@ impl PaintApp {
         ctx.data_mut(|d| d.insert_temp(popup_id, popup));
         if changed {
             self.restyle_text();
+            self.remember_text_font();
         }
     }
 
@@ -221,4 +257,20 @@ fn clicked_outside(ctx: &egui::Context, rects: &[Rect], anchor: Rect) -> bool {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max { s.to_owned() } else { format!("{}…", s.chars().take(max - 1).collect::<String>()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_size_field_accepts_numbers_in_range() {
+        assert_eq!(parse_font_size("72"), Some(72.0));
+        assert_eq!(parse_font_size(" 10,5 "), Some(10.5));
+        assert_eq!(parse_font_size("10.56"), Some(10.6));
+        assert_eq!(parse_font_size("9000"), Some(MAX_FONT_SIZE));
+        for bad in ["", "0", "abc", "-4", "NaN", "inf"] {
+            assert_eq!(parse_font_size(bad), None, "{bad}");
+        }
+    }
 }

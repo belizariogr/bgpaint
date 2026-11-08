@@ -13,6 +13,7 @@ use bgpaint_core::geom::{PixelRect, Point, RectF};
 use bgpaint_core::history::Change;
 use bgpaint_core::raster;
 use bgpaint_core::shapes::{self, RasterShape, ShapeKind, ShapePaint};
+use bgpaint_core::text::{self, TextStyle};
 use bgpaint_core::tiny_skia::Pixmap;
 use bgpaint_core::vector::{ShapeGeom, VectorShape};
 use egui::{Modifiers, PointerButton, Pos2};
@@ -53,6 +54,14 @@ pub enum Geom {
     PolygonDraft {
         points: Vec<Point>,
     },
+    /// A text object picked up to be moved, rotated or re-wrapped (a double click edits its
+    /// words, with the Text tool).
+    Text {
+        geom: BoxGeom,
+        text: String,
+        style: TextStyle,
+        auto_size: bool,
+    },
 }
 
 impl Geom {
@@ -78,6 +87,9 @@ impl Geom {
             Geom::Line { a, b } => ShapeGeom::Line { a: *a, b: *b },
             Geom::Curve { a, b, c1, c2, .. } => ShapeGeom::Curve { a: *a, b: *b, c1: *c1, c2: *c2 },
             Geom::Arrow { points, .. } => ShapeGeom::Arrow { points: points.clone() },
+            Geom::Text { geom, text, style, auto_size } => {
+                ShapeGeom::Text { rect: geom.rect, angle: geom.angle, text: text.clone(), style: style.clone(), auto_size: *auto_size }
+            }
             Geom::PolygonDraft { .. } => return None,
         })
     }
@@ -91,6 +103,9 @@ impl Geom {
             ShapeGeom::Line { a, b } => Geom::Line { a: *a, b: *b },
             ShapeGeom::Curve { a, b, c1, c2 } => Geom::Curve { a: *a, b: *b, c1: *c1, c2: *c2, stage: 2 },
             ShapeGeom::Arrow { points } => Geom::Arrow { points: points.clone(), drawing: false },
+            ShapeGeom::Text { rect, angle, text, style, auto_size } => {
+                Geom::Text { geom: BoxGeom { rect: *rect, angle: *angle }, text: text.clone(), style: style.clone(), auto_size: *auto_size }
+            }
         }
     }
 }
@@ -116,12 +131,12 @@ enum Drag {
 }
 
 /// A vector object taken off its layer to be edited.
-struct Lifted {
+pub(super) struct Lifted {
     layer: LayerId,
     index: usize,
-    original: VectorShape,
+    pub(super) original: VectorShape,
     /// The document before the object was taken (the undo step of the edit).
-    before: DocState,
+    pub(super) before: DocState,
 }
 
 pub struct ShapeOp {
@@ -183,6 +198,10 @@ impl ShapeOp {
     /// Re-rasterizes after a change; returns the canvas area to redraw.
     fn update(&mut self) -> PixelRect {
         let before = self.bounds();
+        if let Geom::Text { geom, text, style, auto_size: true } = &mut self.geom {
+            let (w, h) = text::fit_box(text, style);
+            *geom = geom.resized(w, h, style.align.anchor());
+        }
         self.raster = match &self.geom {
             Geom::PolygonDraft { points } => {
                 shapes::polygon_path(points, false).and_then(|p| shapes::rasterize(&p, &self.paint, false, self.canvas.0, self.canvas.1))
@@ -317,8 +336,19 @@ impl PaintApp {
                     return;
                 }
             }
+            // A double click on a picked-up text edits its words.
+            if let Geom::Text { geom, .. } = &op.geom
+                && geom.hit(p, tol, rotate_off) == Some(BoxHit::Inside)
+            {
+                let double = op.last_click.is_some_and(|(t, q)| t.elapsed().as_millis() < 450 && q.distance(p) <= tol * 2.0);
+                op.last_click = Some((Instant::now(), p));
+                if double {
+                    self.edit_lifted_text(p);
+                    return;
+                }
+            }
             let hit = match &op.geom {
-                Geom::Box { geom, .. } => match geom.hit(p, tol, rotate_off) {
+                Geom::Box { geom, .. } | Geom::Text { geom, .. } => match geom.hit(p, tol, rotate_off) {
                     Some(BoxHit::Inside) => Some(op.start_move(p)),
                     h => h.map(|h| Drag::Box(h, p, *geom)),
                 },
@@ -385,12 +415,50 @@ impl PaintApp {
         self.active = Active::Shape(op);
     }
 
-    /// Takes object `index` of layer `layer` off the document to edit it, starting a move at `p`.
-    fn lift_object(&mut self, layer: usize, index: usize, p: Point) {
+    /// Takes object `index` of layer `layer` off the document, remembering how to put it back.
+    pub(super) fn take_object_for_edit(&mut self, layer: usize, index: usize) -> Option<Lifted> {
         let before = self.doc.snapshot();
         self.doc.set_active(layer);
         let layer_id = self.doc.layers()[layer].id;
-        let Some(shape) = self.doc.take_object(layer, index) else { return };
+        let original = self.doc.take_object(layer, index)?;
+        Some(Lifted { layer: layer_id, index, original, before })
+    }
+
+    /// Font size and opacity of the text object picked up by the Pointer, if there is one.
+    pub fn picked_text(&self) -> Option<(f32, f32)> {
+        match &self.active {
+            Active::Shape(ShapeOp { geom: Geom::Text { style, .. }, paint, .. }) => Some((style.size_pt, paint.opacity)),
+            _ => None,
+        }
+    }
+
+    /// Changes the picked-up text's opacity and font size; the box scales along, so the text
+    /// keeps its line breaks.
+    pub fn set_picked_text(&mut self, size_pt: f32, opacity: f32) {
+        let Active::Shape(op) = &mut self.active else { return };
+        let Geom::Text { geom, style, .. } = &mut op.geom else { return };
+        let ratio = size_pt / style.size_pt;
+        *geom = geom.resized(geom.rect.width() * ratio, geom.rect.height() * ratio, 0.0);
+        style.size_pt = size_pt;
+        op.paint.opacity = opacity;
+        let d = op.update();
+        self.preview_dirty.add(d);
+    }
+
+    /// Hands the text object picked up by the Pointer over to the Text tool.
+    fn edit_lifted_text(&mut self, p: Point) {
+        match std::mem::take(&mut self.active) {
+            Active::Shape(ShapeOp { geom: Geom::Text { geom, text, style, auto_size }, paint, lifted, .. }) => {
+                self.open_text_object(geom, &text, paint.text_style(&style), auto_size, lifted, p);
+            }
+            other => self.active = other,
+        }
+    }
+
+    /// Takes object `index` of layer `layer` off the document to edit it, starting a move at `p`.
+    fn lift_object(&mut self, layer: usize, index: usize, p: Point) {
+        let Some(lifted) = self.take_object_for_edit(layer, index) else { return };
+        let shape = lifted.original.clone();
         let mut op = ShapeOp {
             geom: Geom::from_shape(&shape.geom),
             paint: shape.paint,
@@ -407,7 +475,7 @@ impl PaintApp {
             selected_point: None,
         };
         op.drag = Some(op.start_move(p));
-        op.lifted = Some(Lifted { layer: layer_id, index, original: shape, before });
+        op.lifted = Some(lifted);
         self.preview_dirty.add(op.bounds());
         self.active = Active::Shape(op);
     }
@@ -449,6 +517,10 @@ impl PaintApp {
             }
             return;
         }
+        // Sizing a text box by hand ends its automatic sizing.
+        if let (Geom::Text { auto_size, .. }, Drag::Box(BoxHit::Handle(_), ..)) = (&mut op.geom, &drag) {
+            *auto_size = false;
+        }
         match (&mut op.geom, drag) {
             (Geom::Box { geom, .. }, Drag::Create { start }) => {
                 let end = if m.shift { square_from(start, p) } else { p };
@@ -479,7 +551,7 @@ impl PaintApp {
                     *last = if m.shift { snap_45(*prev, p) } else { p };
                 }
             }
-            (Geom::Box { geom, .. }, Drag::Box(hit, start, orig)) => *geom = orig.drag(hit, start, p, m.shift),
+            (Geom::Box { geom, .. } | Geom::Text { geom, .. }, Drag::Box(hit, start, orig)) => *geom = orig.drag(hit, start, p, m.shift),
             (Geom::Line { a, b }, Drag::Endpoint(end)) => {
                 if end {
                     *b = if m.shift { snap_45(*a, p) } else { p };
@@ -597,9 +669,15 @@ impl PaintApp {
             return;
         };
         let shape = VectorShape::with_raster(geom, op.paint, op.raster.take());
+        self.place_object(shape, op.lifted.take(), "shape");
+    }
+
+    /// Puts a finished object on its layer, back in its place when it was picked up. `label`
+    /// names the undo step of a new object.
+    pub(super) fn place_object(&mut self, shape: VectorShape, lifted: Option<Lifted>, label: &'static str) {
         // A shape moved (or drawn) entirely off the canvas shows nowhere: it is not kept.
         let visible = !shape.bounds().intersect(&self.doc.bounds()).is_empty();
-        match op.lifted.take() {
+        match lifted {
             Some(l) if !visible => self.history.push("delete shape", vec![Change::document(l.before)]),
             Some(l) => {
                 let changed = !shape.same_as(&l.original);
@@ -612,7 +690,7 @@ impl PaintApp {
             None => {
                 let before = self.doc.snapshot();
                 self.doc.add_object(shape);
-                self.history.push("shape", vec![Change::document(before)]);
+                self.history.push(label, vec![Change::document(before)]);
             }
         }
     }
@@ -668,11 +746,6 @@ impl PaintApp {
 
     pub fn shape_cursor(&self, pos: Pos2) -> Option<egui::CursorIcon> {
         use egui::CursorIcon as C;
-        // The Pointer keeps the normal arrow, with a closed hand only while something is dragged.
-        if self.vector_pointer() {
-            let dragging = matches!(&self.active, Active::Shape(op) if op.drag.is_some());
-            return Some(if dragging { C::Grabbing } else { C::Default });
-        }
         let p = self.view.to_canvas(pos);
         let tol = 6.0 / self.view.scale();
         // A shape can be grabbed (open hand) and is held while it moves (closed hand).
@@ -683,7 +756,9 @@ impl PaintApp {
                 (Some(Drag::Box(hit, _, orig)), _) => Some(hit.cursor(orig.angle)),
                 (Some(Drag::Endpoint(_) | Drag::ArrowPoint(..)), _) => Some(C::Crosshair),
                 (Some(_), _) => None,
-                (None, Geom::Box { geom, .. }) => geom.hit(p, tol, 24.0 / self.view.scale()).map(|h| grab(h, geom.angle)),
+                (None, Geom::Box { geom, .. } | Geom::Text { geom, .. }) => {
+                    geom.hit(p, tol, 24.0 / self.view.scale()).map(|h| grab(h, geom.angle))
+                }
                 (None, Geom::Line { a, b }) => {
                     if a.distance(p) <= tol * 1.5 || b.distance(p) <= tol * 1.5 {
                         Some(C::Crosshair)
@@ -708,6 +783,11 @@ impl PaintApp {
             },
             _ => None,
         };
+        // The Pointer keeps the normal arrow over objects; handles still show what they do, and
+        // a move in progress the closed hand.
+        if self.vector_pointer() {
+            return Some(on_op.filter(|c| *c != C::Grab).unwrap_or(C::Default));
+        }
         // In vector mode, objects can be grabbed.
         on_op.or_else(|| (self.doc.vector_mode() && self.doc.object_at(p, tol).is_some()).then_some(C::Grab))
     }
@@ -762,6 +842,8 @@ fn finish_polygon(op: &mut ShapeOp) {
 pub fn paint_overlay(op: &ShapeOp, view: &View, painter: &egui::Painter, t: &Theme) {
     match &op.geom {
         Geom::Box { geom, .. } if op.editing() => geom.paint(view, painter, t, true),
+        // A text box only shows through its frame, also while it is dragged.
+        Geom::Text { geom, .. } => geom.paint(view, painter, t, true),
         Geom::Line { a, b } if op.editing() => paint_point_handles(view, painter, &[*a, *b]),
         // Every point of an arrow has its own handle.
         Geom::Arrow { points, .. } if op.editing() => {
@@ -837,6 +919,22 @@ mod tests {
             panic!()
         };
         assert_eq!(points, vec![Point::new(2.0, 3.0)]);
+    }
+
+    #[test]
+    fn resizing_a_text_box_keeps_its_anchor_in_place() {
+        for angle in [0.0, 30.0, 200.0] {
+            let g = BoxGeom { rect: RectF::from_xywh(10.0, 20.0, 100.0, 40.0), angle };
+            let s = g.resized(250.0, 100.0, 0.0);
+            assert!((s.rect.width() - 250.0).abs() < 0.01 && (s.rect.height() - 100.0).abs() < 0.01);
+            assert_eq!(s.angle, angle);
+            let (a, b) = (g.to_world(g.rect.min), s.to_world(s.rect.min));
+            assert!(a.distance(b) < 0.01, "{angle}: {a:?} -> {b:?}");
+            // A right-aligned box keeps its top right corner.
+            let s = g.resized(40.0, 100.0, 1.0);
+            let (a, b) = (g.to_world(Point::new(g.rect.max.x, g.rect.min.y)), s.to_world(Point::new(s.rect.max.x, s.rect.min.y)));
+            assert!(a.distance(b) < 0.51, "{angle}: {a:?} -> {b:?}");
+        }
     }
 
     #[test]

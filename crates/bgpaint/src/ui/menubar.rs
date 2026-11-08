@@ -112,9 +112,24 @@ impl PaintApp {
                 }
                 widgets::vseparator(ui.painter(), &t, x + 2.0, cy - 10.0, cy + 10.0);
                 x += 10.0;
-                let strip = Rect::from_min_max(pos2(x, r.top()), pos2(r.right() - 52.0, r.bottom()));
+                let hidden = self.ribbon_hidden();
+                let strip = Rect::from_min_max(pos2(x, r.top()), pos2(r.right() - if hidden { 92.0 } else { 52.0 }, r.bottom()));
                 if let Some(cmd) = super::tab_strip::show(self, ui, &t, strip) {
                     self.execute(ui.ctx(), cmd);
+                }
+                if hidden {
+                    // Shows the hidden toolbar floating over the canvas.
+                    let rect = Rect::from_min_size(pos2(r.right() - 84.0, cy - bh / 2.0), vec2(36.0, bh));
+                    let revealed = self.ui.ribbon_revealed;
+                    if IconButton::new(if revealed { ic::CHEVRON_UP } else { ic::CHEVRON_DOWN })
+                        .size(18.0)
+                        .selected(revealed)
+                        .tooltip(if revealed { self.tr.collapse_toolbar } else { self.tr.expand_toolbar })
+                        .show(ui, &t, rect, Id::unique("float-toolbar-btn"))
+                        .clicked()
+                    {
+                        self.ui.ribbon_revealed = !revealed;
+                    }
                 }
                 let rect = Rect::from_min_size(pos2(r.right() - 44.0, cy - bh / 2.0), vec2(36.0, bh));
                 if IconButton::new(ic::SETTINGS)

@@ -2,7 +2,7 @@
 
 use crate::app::PaintApp;
 use crate::commands::Command;
-use crate::tools::{MAX_SIZE, Tool};
+use crate::tools::{MAX_FONT_SIZE, MAX_SIZE, Tool};
 use bgpaint_core::history::Change;
 use bgpaint_core::io::SaveFormat;
 use bgpaint_core::raster::{self, QuarterTurn};
@@ -236,6 +236,18 @@ impl PaintApp {
     }
 
     fn grow_size(&mut self, up: bool) {
+        if let Some((size, opacity)) = self.picked_text() {
+            let size = if up { (size + 1.0).min(MAX_FONT_SIZE) } else { (size - 1.0).max(1.0) };
+            self.set_picked_text(size, opacity);
+            return;
+        }
+        if self.tool == Tool::Text {
+            let s = &mut self.text_settings;
+            s.size_pt = if up { (s.size_pt + 1.0).min(MAX_FONT_SIZE) } else { (s.size_pt - 1.0).max(1.0) };
+            self.restyle_text();
+            self.remember_text_font();
+            return;
+        }
         if let Some(s) = self.tools.stroke_mut(self.tool) {
             s.size = if up { (s.size + 1.0).min(MAX_SIZE) } else { (s.size - 1.0).max(1.0) };
             if self.tool == Tool::Shape {
