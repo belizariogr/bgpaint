@@ -19,6 +19,8 @@ for size in 16 32 64 128 256 512 1024; do
   rsvg-convert --width "$size" --height "$size" --output "$mac/icon-$size.png" "$dir/icon-macos.svg"
 done
 
+cp "$mac/icon-256.png" "$dir/icon-macos-256.png"
+
 python3 -I - "$dir" "$mac" <<'PY'
 import struct, sys
 from pathlib import Path
