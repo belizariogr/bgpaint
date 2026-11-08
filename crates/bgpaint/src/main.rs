@@ -39,10 +39,23 @@ fn main() -> eframe::Result {
         single_instance::Start::Primary(listener) => listener,
     };
     let (w, h) = settings.window_size.unwrap_or((1280.0, 800.0));
+    #[cfg_attr(target_os = "macos", allow(unused_variables))]
     let tr = i18n::resolve(settings.language.as_deref());
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).ok();
+    // On macOS the icon carries the transparent margin of Apple's icon grid, so the Dock icon is
+    // not oversized.
+    #[cfg(target_os = "macos")]
+    let icon_png: &[u8] = include_bytes!("../assets/icon-macos-256.png");
+    #[cfg(not(target_os = "macos"))]
+    let icon_png: &[u8] = include_bytes!("../assets/icon-256.png");
+    let icon = eframe::icon_data::from_png_bytes(icon_png).ok();
+    // eframe copies the initial title into the macOS app menu, which must read just "BGPaint";
+    // the window title is updated with the document name afterwards.
+    #[cfg(target_os = "macos")]
+    let initial_title = "BGPaint".to_string();
+    #[cfg(not(target_os = "macos"))]
+    let initial_title = format!("{} - {}", tr.untitled, tr.app_name);
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title(format!("{} - {}", tr.untitled, tr.app_name))
+        .with_title(initial_title)
         .with_app_id("io.github.belizariogr.bgpaint")
         .with_inner_size([w.max(640.0), h.max(480.0)])
         .with_min_inner_size([720.0, 480.0])
