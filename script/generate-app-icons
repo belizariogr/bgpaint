@@ -2,7 +2,8 @@
 # Regenerates every derived app icon from crates/bgpaint/assets/icon.svg:
 # icon-{16..1024}.png and icon.ico (PNG frames 16-256), where the tile fills the
 # canvas, and icon.icns (icp4/icp5/icp6/ic07-ic14) from icon-macos.svg, which adds
-# Apple's transparent margin. Needs rsvg-convert and python3; adds nothing to
+# Apple's transparent margin. Sizes up to 48 px leave out the elements of icon.svg
+# marked data-large-only, which do not read that small. Needs rsvg-convert and python3; adds nothing to
 # the workspace build. Run script/generate-macos-dmg-assets afterwards (the DMG
 # volume icon carries the app icon).
 set -euo pipefail
@@ -10,13 +11,19 @@ set -euo pipefail
 dir="$(cd "$(dirname "$0")/.." && pwd)/crates/bgpaint/assets"
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (brew install librsvg)" >&2; exit 1; }
 
-for size in 16 24 32 48 64 128 256 512 1024; do
-  rsvg-convert --width "$size" --height "$size" --output "$dir/icon-$size.png" "$dir/icon.svg"
-done
+# The small variant sits in its own folder: icon-macos.svg finds icon.svg next to it.
+small="$(mktemp -d)"
 mac="$(mktemp -d)"
-trap 'rm -rf "$mac"' EXIT
+trap 'rm -rf "$small" "$mac"' EXIT
+grep -v 'data-large-only="true"' "$dir/icon.svg" > "$small/icon.svg"
+cp "$dir/icon-macos.svg" "$small/icon-macos.svg"
+source_dir() { if [ "$1" -le 48 ]; then echo "$small"; else echo "$dir"; fi; }
+
+for size in 16 24 32 48 64 128 256 512 1024; do
+  rsvg-convert --width "$size" --height "$size" --output "$dir/icon-$size.png" "$(source_dir "$size")/icon.svg"
+done
 for size in 16 32 64 128 256 512 1024; do
-  rsvg-convert --width "$size" --height "$size" --output "$mac/icon-$size.png" "$dir/icon-macos.svg"
+  rsvg-convert --width "$size" --height "$size" --output "$mac/icon-$size.png" "$(source_dir "$size")/icon-macos.svg"
 done
 
 cp "$mac/icon-256.png" "$dir/icon-macos-256.png"
