@@ -201,7 +201,7 @@ pub static STRINGS: Strings = Strings {
     unsaved_title: "Paint",
     unsaved_question: "¿Quieres guardar los cambios en",
     dont_save: "No guardar",
-    // The macOS name for "Don't save" (the red button of AppKit's save alerts).
+    // "Don't save" for a document that exists only in memory (the red button on the left).
     discard_document: "Eliminar",
     error_title: "Algo salió mal",
     open_failed: "No se pudo abrir este archivo.",

@@ -6,7 +6,7 @@ use crate::app::PaintApp;
 use crate::i18n::Strings;
 use crate::theme::Theme;
 use crate::update::{RELEASES_URL, Stage, Updater};
-use egui::{Color32, Id, RichText};
+use egui::{Id, RichText};
 
 /// `template` with its `{version}` filled in.
 fn fill(template: &str, version: &str) -> String {
@@ -109,9 +109,8 @@ impl PaintApp {
                 }
                 submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if *wrong {
-                    let red = if t.dark { Color32::from_rgb(0xFF, 0x99, 0xA4) } else { Color32::from_rgb(0xC4, 0x2B, 0x1C) };
                     ui.add_space(4.0);
-                    ui.label(RichText::new(tr.update_wrong_password).size(13.0).color(red));
+                    ui.label(RichText::new(tr.update_wrong_password).size(13.0).color(t.danger));
                 }
             }
             ui.add_space(8.0);

@@ -214,7 +214,7 @@ pub struct Strings {
     pub unsaved_title: &'static str,
     pub unsaved_question: &'static str,
     pub dont_save: &'static str,
-    // The macOS name for "Don't save" (the red button of AppKit's save alerts).
+    // "Don't save" for a document that exists only in memory (the red button on the left).
     pub discard_document: &'static str,
     pub error_title: &'static str,
     pub open_failed: &'static str,

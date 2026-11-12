@@ -143,6 +143,25 @@ pub fn accent_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response
     resp
 }
 
+/// A button whose action destroys data (deleting a document never saved): Fluent's red button on
+/// Linux, AppKit's destructive button on macOS.
+pub fn destructive_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
+    if cfg!(target_os = "macos") {
+        return mac::destructive_button(ui, t, text, width);
+    }
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        lerp_color(t.danger, Color32::BLACK, 0.15)
+    } else if resp.hovered() {
+        lerp_color(t.danger, Color32::BLACK, 0.08)
+    } else {
+        t.danger
+    };
+    ui.painter().rect_filled(rect, RADIUS, fill);
+    label(ui.painter(), rect.center(), Align2::CENTER_CENTER, text, 14.0, t.on_accent);
+    resp
+}
+
 /// A standard button: Fluent on Linux, AppKit's push button on macOS.
 pub fn standard_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
@@ -237,7 +256,6 @@ pub mod mac {
     }
 
     /// `NSButton` with `hasDestructiveAction`, as in macOS 26 save alerts: red title on a red tint.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn destructive_button(ui: &mut Ui, t: &Theme, text: &str, width: f32) -> Response {
         let (row, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
         let red = if t.dark { Color32::from_rgb(0xFF, 0x45, 0x3A) } else { Color32::from_rgb(0xFF, 0x38, 0x2B) };
@@ -310,11 +328,12 @@ pub mod mac {
         p.text(pos2(rect.left() + D + 6.0, c.y), Align2::LEFT_CENTER, text, font(), t.text);
         resp
     }
+}
 
-    fn lerp_color(a: Color32, b: Color32, f: f32) -> Color32 {
-        let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * f).round() as u8;
-        Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
-    }
+/// Opaque mix of `a` toward `b` by `f` (0 = `a`, 1 = `b`).
+fn lerp_color(a: Color32, b: Color32, f: f32) -> Color32 {
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * f).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
 /// Fluent radio button with a label; returns the click response.

@@ -28,6 +28,22 @@ pub enum Footer {
     Cancel,
 }
 
+/// The footer buttons of a dialog: the accent (default) button, an optional secondary one and an
+/// optional Cancel.
+pub type Buttons<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
+
+/// How the footer lays out its buttons.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// The platform's usual layout: equal-width buttons filling the row (Fluent), or right
+    /// aligned and sized to their titles (macOS).
+    Platform,
+    /// A save alert on every platform: buttons sized to their titles, right aligned with the
+    /// default button last. A `destructive` secondary button (deleting a document that exists
+    /// nowhere else) sits alone on the left in red.
+    Alert { destructive: bool },
+}
+
 /// Shows a dialog with a title, a body and up to three footer buttons
 /// (`primary` is the accent button). Escape triggers Cancel.
 pub fn dialog(
@@ -36,9 +52,22 @@ pub fn dialog(
     id: &str,
     title: &str,
     width: f32,
-    buttons: (&str, Option<&str>, Option<&str>),
+    buttons: Buttons,
     body: impl FnOnce(&mut egui::Ui),
 ) -> Footer {
+    dialog_with(ctx, t, (id, title, width), (buttons, Layout::Platform), body)
+}
+
+/// [`dialog`] with an explicit footer [`Layout`]; `head` is (id, title, width).
+fn dialog_with(
+    ctx: &egui::Context,
+    t: &Theme,
+    head: (&str, &str, f32),
+    footer: (Buttons, Layout),
+    body: impl FnOnce(&mut egui::Ui),
+) -> Footer {
+    let (id, title, width) = head;
+    let (buttons, layout) = footer;
     let mut result = Footer::None;
     let frame = egui::Frame::NONE
         .fill(t.dialog_bg)
@@ -54,8 +83,14 @@ pub fn dialog(
             ui.add_space(10.0);
             body(ui);
         });
+        let destructive = layout == Layout::Alert { destructive: true };
         if cfg!(target_os = "macos") {
-            result = mac_footer(ui, t, width, buttons);
+            // No footer band; buttons sized to their titles, as in AppKit alerts.
+            let bw = |ui: &egui::Ui, text: &str| (widgets::text_width(ui, text, widgets::mac::font()) + 32.0).max(84.0);
+            egui::Frame::NONE.inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 18 }).show(ui, |ui| {
+                ui.set_width(width - 48.0);
+                result = aligned_buttons(ui, t, buttons, destructive, 10.0, bw);
+            });
         } else {
             egui::Frame::NONE
                 .fill(t.dialog_footer)
@@ -63,24 +98,12 @@ pub fn dialog(
                 .inner_margin(Margin::same(24))
                 .show(ui, |ui| {
                     ui.set_width(width - 48.0);
-                    let n = 1 + usize::from(buttons.1.is_some()) + usize::from(buttons.2.is_some());
-                    let bw = (width - 48.0 - 8.0 * (n as f32 - 1.0)) / n as f32;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if widgets::accent_button(ui, t, buttons.0, bw).clicked() {
-                            result = Footer::Primary;
-                        }
-                        if let Some(s) = buttons.1
-                            && widgets::standard_button(ui, t, s, bw).clicked()
-                        {
-                            result = Footer::Secondary;
-                        }
-                        if let Some(c) = buttons.2
-                            && widgets::standard_button(ui, t, c, bw).clicked()
-                        {
-                            result = Footer::Cancel;
-                        }
-                    });
+                    result = if layout == Layout::Platform {
+                        fluent_buttons(ui, t, buttons, width - 48.0)
+                    } else {
+                        let bw = |ui: &egui::Ui, text: &str| (widgets::text_width(ui, text, FontId::proportional(14.0)) + 40.0).max(96.0);
+                        aligned_buttons(ui, t, buttons, destructive, 8.0, bw)
+                    };
                 });
         }
     });
@@ -94,39 +117,68 @@ pub fn dialog(
     result
 }
 
-/// The macOS button row: no footer band, buttons sized to their titles and right aligned with
-/// the default button last. With three buttons the secondary one discards changes and, as in
-/// AppKit's save alerts, sits alone on the left in red (`[Delete]      [Cancel] [Save]`).
-fn mac_footer(ui: &mut egui::Ui, t: &Theme, width: f32, buttons: (&str, Option<&str>, Option<&str>)) -> Footer {
+/// Fluent's ContentDialog row: equal-width buttons filling `width`, the accent one first.
+fn fluent_buttons(ui: &mut egui::Ui, t: &Theme, buttons: Buttons, width: f32) -> Footer {
     let mut result = Footer::None;
-    let bw = |ui: &egui::Ui, text: &str| (widgets::text_width(ui, text, widgets::mac::font()) + 32.0).max(84.0);
-    egui::Frame::NONE.inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 18 }).show(ui, |ui| {
-        ui.set_width(width - 48.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            let destructive = buttons.1.filter(|_| buttons.2.is_some());
-            if let Some(s) = destructive
-                && widgets::mac::destructive_button(ui, t, s, bw(ui, s)).clicked()
-            {
-                result = Footer::Secondary;
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::accent_button(ui, t, buttons.0, bw(ui, buttons.0)).clicked() {
-                    result = Footer::Primary;
-                }
-                if let Some(c) = buttons.2
-                    && widgets::standard_button(ui, t, c, bw(ui, c)).clicked()
-                {
-                    result = Footer::Cancel;
-                }
-                if destructive.is_none()
-                    && let Some(s) = buttons.1
-                    && widgets::standard_button(ui, t, s, bw(ui, s)).clicked()
-                {
-                    result = Footer::Secondary;
-                }
-            });
-        });
+    let n = 1 + usize::from(buttons.1.is_some()) + usize::from(buttons.2.is_some());
+    let bw = (width - 8.0 * (n as f32 - 1.0)) / n as f32;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if widgets::accent_button(ui, t, buttons.0, bw).clicked() {
+            result = Footer::Primary;
+        }
+        if let Some(s) = buttons.1
+            && widgets::standard_button(ui, t, s, bw).clicked()
+        {
+            result = Footer::Secondary;
+        }
+        if let Some(c) = buttons.2
+            && widgets::standard_button(ui, t, c, bw).clicked()
+        {
+            result = Footer::Cancel;
+        }
+    });
+    result
+}
+
+/// A row of buttons sized by `bw` and right aligned with the default button last
+/// (`[Don't Save] [Cancel] [Save]`); a `destructive` secondary button sits alone on the left in
+/// red, as in AppKit's save alerts (`[Delete]      [Cancel] [Save]`). Buttons are created left
+/// to right so Tab moves focus in reading order.
+fn aligned_buttons(
+    ui: &mut egui::Ui,
+    t: &Theme,
+    buttons: Buttons,
+    destructive: bool,
+    spacing: f32,
+    bw: impl Fn(&egui::Ui, &str) -> f32,
+) -> Footer {
+    let mut result = Footer::None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = spacing;
+        let mut right = 0.0;
+        for text in [buttons.1.filter(|_| !destructive), buttons.2, Some(buttons.0)].into_iter().flatten() {
+            right += bw(ui, text) + spacing;
+        }
+        if let Some(s) = buttons.1.filter(|_| destructive)
+            && widgets::destructive_button(ui, t, s, bw(ui, s)).clicked()
+        {
+            result = Footer::Secondary;
+        }
+        ui.add_space((ui.available_width() - right + spacing).max(0.0));
+        if let Some(s) = buttons.1.filter(|_| !destructive)
+            && widgets::standard_button(ui, t, s, bw(ui, s)).clicked()
+        {
+            result = Footer::Secondary;
+        }
+        if let Some(c) = buttons.2
+            && widgets::standard_button(ui, t, c, bw(ui, c)).clicked()
+        {
+            result = Footer::Cancel;
+        }
+        if widgets::accent_button(ui, t, buttons.0, bw(ui, buttons.0)).clicked() {
+            result = Footer::Primary;
+        }
     });
     result
 }
@@ -146,11 +198,24 @@ impl PaintApp {
         match modal {
             Modal::ConfirmSave(action) => {
                 let name = self.file.display_name(tr);
-                let discard = if cfg!(target_os = "macos") { tr.discard_document } else { tr.dont_save };
-                let r = dialog(ctx, &t, "confirm-save", tr.unsaved_title, 460.0, (tr.save, Some(discard), Some(tr.cancel)), |ui| {
+                // "Delete" (red, on the left) is offered only for a document that exists nowhere
+                // but in memory: never saved, or its file was deleted. A file still on disk gets
+                // the usual "Don't Save", right aligned with the other buttons. Checked once when
+                // the dialog opens, so the buttons don't move under the pointer (or stat the
+                // disk every frame).
+                let memo = Id::unique("confirm-save-only-in-memory");
+                let file = &self.file;
+                let only_in_memory =
+                    ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(memo, || file.path.is_none() || file.missing_on_disk()));
+                let discard = if only_in_memory { tr.discard_document } else { tr.dont_save };
+                let footer = ((tr.save, Some(discard), Some(tr.cancel)), Layout::Alert { destructive: only_in_memory });
+                let r = dialog_with(ctx, &t, ("confirm-save", tr.unsaved_title, 460.0), footer, |ui| {
                     ui.label(RichText::new(format!("{} {name}?", tr.unsaved_question)).size(14.0).color(t.text));
                     ui.add_space(8.0);
                 });
+                if r != Footer::None {
+                    ctx.data_mut(|d| d.remove_temp::<bool>(memo));
+                }
                 match r {
                     Footer::Primary => self.resolve_unsaved(ctx, action, true),
                     Footer::Secondary => self.resolve_unsaved(ctx, action, false),
