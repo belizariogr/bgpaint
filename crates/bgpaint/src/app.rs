@@ -199,6 +199,12 @@ impl PaintApp {
         crate::platform::repaint_on_desktop_theme_change(&cc.egui_ctx);
         app.sync_theme(&cc.egui_ctx);
         crate::tools::text::preload_fonts();
+        #[cfg(target_os = "macos")]
+        let open = {
+            let mut open = open;
+            open.extend(crate::mac_open::connect(&cc.egui_ctx, app.files.sender()));
+            open
+        };
         for path in open {
             app.open_path(&cc.egui_ctx, path);
         }

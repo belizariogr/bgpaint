@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the Info.plist cargo-packager writes (info-plist-path in Cargo.toml).
+  The image types BGPaint opens, so Finder lists it under "Open With" (the files
+  arrive as an Apple event, handled in src/mac_open.rs). Same list as
+  OPEN_EXTENSIONS in bgpaint-core's io.rs.
+
+  Alternate: offered, but the user's default app (Preview) stays the default
+  until they pick BGPaint with "Change All…".
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<!-- Types macOS declares itself. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.png</string>
+				<string>public.jpeg</string>
+				<string>com.compuserve.gif</string>
+				<string>com.microsoft.bmp</string>
+				<string>com.microsoft.ico</string>
+				<string>public.tiff</string>
+				<string>org.webmproject.webp</string>
+				<string>public.svg-image</string>
+				<string>com.truevision.tga-image</string>
+				<string>public.pbm</string>
+				<string>public.radiance</string>
+				<string>com.ilm.openexr-image</string>
+				<string>com.microsoft.dds</string>
+			</array>
+		</dict>
+		<!-- OpenRaster, BGPaint's project format (declared below). -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>OpenRaster Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Default</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.openraster.ora</string>
+			</array>
+		</dict>
+		<!-- Extensions without a system type (macOS gives them dynamic ones). -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>jpe</string>
+				<string>jfif</string>
+				<string>dib</string>
+				<string>svgz</string>
+				<string>pnm</string>
+				<string>pbm</string>
+				<string>pgm</string>
+				<string>ppm</string>
+				<string>pam</string>
+				<string>qoi</string>
+				<string>hdr</string>
+				<string>exr</string>
+				<string>dds</string>
+				<string>ff</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.openraster.ora</string>
+			<key>UTTypeDescription</key>
+			<string>OpenRaster Image</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.image</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>ora</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>image/openraster</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

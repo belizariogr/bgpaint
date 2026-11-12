@@ -10,7 +10,8 @@ repository = "https://github.com/belizariogr/bgpaint"
 authors = ["Belizario <belizariogr@gmail.com>"]
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Not forbid: the macOS "open documents" handler (crates/bgpaint/src/mac_open.rs) allows it.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

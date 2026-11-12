@@ -1,5 +1,6 @@
 //! BGPaint: a fast clone of Windows 11 Paint for Linux and macOS.
-#![forbid(unsafe_code)]
+// Denied everywhere; only `mac_open` (Objective-C) allows it.
+#![deny(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
@@ -13,6 +14,8 @@ mod files;
 mod i18n;
 #[cfg(target_os = "macos")]
 mod mac_menu;
+#[cfg(target_os = "macos")]
+mod mac_open;
 #[cfg(target_os = "macos")]
 mod mac_titlebar;
 mod platform;
@@ -32,6 +35,9 @@ fn main() -> eframe::Result {
     // Linux only, read while the window is created.
     platform::refresh_desktop_theme();
     let settings = settings::Settings::load();
+    // Files opened from Finder arrive as Apple events, not arguments.
+    #[cfg(target_os = "macos")]
+    mac_open::install();
     let open: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(std::path::PathBuf::from).collect();
     // A running BGPaint opens the files in new tabs instead.
     let instance = match single_instance::start(&open) {

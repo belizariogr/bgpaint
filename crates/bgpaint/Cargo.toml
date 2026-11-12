@@ -30,9 +30,20 @@ resvg.workspace = true
 # The global menu bar.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
-# Where AppKit puts the traffic lights (see src/mac_titlebar.rs); the versions muda already uses.
+# Where AppKit puts the traffic lights (see src/mac_titlebar.rs) and files opened from Finder
+# (src/mac_open.rs); the versions muda already uses.
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSGeometry"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSArray",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSNotification",
+    "NSString",
+    "NSURL",
+] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "NSApplication",
@@ -74,6 +85,8 @@ icons = [
 
 [package.metadata.packager.macos]
 minimum-system-version = "10.15.7"
+# Merged into the generated Info.plist: the image types BGPaint opens from Finder ("Open With").
+info-plist-path = "packaging/macos/Info.plist"
 
 [package.metadata.packager.deb]
 package-name = "bgpaint"
