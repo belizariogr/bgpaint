@@ -20,6 +20,7 @@ pub static STRINGS: Strings = Strings {
     save_as: "Guardar como",
     save_as_project: "Guardar como proyecto",
     png_image: "Imagen PNG",
+    png_optimized: "Imagen PNG optimizada",
     jpeg_image: "Imagen JPEG",
     bmp_image: "Imagen BMP",
     gif_image: "Imagen GIF",

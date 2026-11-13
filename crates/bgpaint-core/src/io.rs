@@ -62,7 +62,11 @@ impl From<image::ImageError> for IoError {
 /// Formats that can be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SaveFormat {
+    /// Full PNG: the image as every program shows it, plus the editable layers and vector
+    /// objects when there is more to keep than the image (see [`keeps_project`]).
     Png,
+    /// Optimized PNG: only the image, objects drawn in.
+    PngOptimized,
     Jpeg,
     Bmp,
     Gif,
@@ -78,7 +82,7 @@ impl SaveFormat {
 
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
-            SaveFormat::Png => &["png"],
+            SaveFormat::Png | SaveFormat::PngOptimized => &["png"],
             SaveFormat::Jpeg => &["jpg", "jpeg", "jpe", "jfif"],
             SaveFormat::Bmp => &["bmp", "dib"],
             SaveFormat::Gif => &["gif"],
@@ -90,7 +94,7 @@ impl SaveFormat {
 
     pub fn name(self) -> &'static str {
         match self {
-            SaveFormat::Png => "PNG",
+            SaveFormat::Png | SaveFormat::PngOptimized => "PNG",
             SaveFormat::Jpeg => "JPEG",
             SaveFormat::Bmp => "BMP",
             SaveFormat::Gif => "GIF",
@@ -101,10 +105,16 @@ impl SaveFormat {
     }
 
     pub fn from_path(path: &Path) -> Option<Self> {
+        Self::from_path_among(
+            path,
+            &[SaveFormat::Png, SaveFormat::Jpeg, SaveFormat::Bmp, SaveFormat::Gif, SaveFormat::Webp, SaveFormat::Tiff, SaveFormat::Ora],
+        )
+    }
+
+    /// The first of `formats` that uses the extension of `path` (case does not matter).
+    pub fn from_path_among(path: &Path, formats: &[SaveFormat]) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-        [SaveFormat::Png, SaveFormat::Jpeg, SaveFormat::Bmp, SaveFormat::Gif, SaveFormat::Webp, SaveFormat::Tiff, SaveFormat::Ora]
-            .into_iter()
-            .find(|f| f.extensions().contains(&ext.as_str()))
+        formats.iter().copied().find(|f| f.extensions().contains(&ext.as_str()))
     }
 
     /// Whether the format keeps an alpha channel.
@@ -133,8 +143,22 @@ pub fn open(path: &Path) -> Result<Opened, IoError> {
     if ext == "ora" || ora::is_ora(&bytes) {
         return Ok(Opened { document: ora::read(&bytes)?, save_format: Some(SaveFormat::Ora) });
     }
+    let mut save_format = SaveFormat::from_path(path).filter(|f| *f != SaveFormat::Ora);
+    // A full PNG opens with its layers and editable objects, unless the image was changed
+    // elsewhere (resized, cropped...) by a program that kept the project that no longer matches.
+    if crate::png::has_project(&bytes) {
+        if let Some(project) = crate::png::embedded_project(&bytes)
+            && let Ok(document) = ora::read(&project)
+            && crate::png::dimensions(&bytes) == Some((document.width(), document.height()))
+        {
+            return Ok(Opened { document, save_format });
+        }
+        // A project that cannot be read (damaged, from a newer version, or kept by a program
+        // that changed the image) opens as its image, but a plain "Save" asks where to write
+        // instead of replacing the file and the project it holds.
+        save_format = None;
+    }
     let pixmap = decode(&bytes, &ext)?;
-    let save_format = SaveFormat::from_path(path).filter(|f| *f != SaveFormat::Ora);
     Ok(Opened { document: Document::from_image(pixmap), save_format })
 }
 
@@ -210,7 +234,7 @@ pub const PNG_LEVEL: u32 = 6;
 /// Encodes a flattened image.
 pub fn encode(pixmap: &Pixmap, format: SaveFormat) -> Result<Vec<u8>, IoError> {
     use image::ImageEncoder;
-    if format == SaveFormat::Png {
+    if matches!(format, SaveFormat::Png | SaveFormat::PngOptimized) {
         return Ok(crate::png::encode(pixmap, PNG_LEVEL));
     }
     let (w, h) = (pixmap.width(), pixmap.height());
@@ -218,7 +242,7 @@ pub fn encode(pixmap: &Pixmap, format: SaveFormat) -> Result<Vec<u8>, IoError> {
     let opaque = !raster::has_transparency(pixmap);
     let mut out = Vec::new();
     match format {
-        SaveFormat::Png => unreachable!("handled above"),
+        SaveFormat::Png | SaveFormat::PngOptimized => unreachable!("handled above"),
         SaveFormat::Jpeg => {
             let rgb = flatten_on(&rgba, Color::WHITE);
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92).write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
@@ -284,10 +308,31 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), IoError> {
     Ok(())
 }
 
+/// Whether a full PNG of `doc` embeds its project: it has vector objects, more than one layer,
+/// a hidden layer or a background color other than white (the image alone would lose them).
+/// Vector mode alone does not count: it is a remembered setting, on for most documents of
+/// someone who uses it, and an embedded copy of every layer would double their plain images.
+pub fn keeps_project(doc: &Document) -> bool {
+    let bg = doc.background();
+    doc.layers().len() > 1 || doc.layers().iter().any(|l| !l.visible || !l.objects.is_empty()) || bg.color != Color::WHITE
+}
+
+/// A full PNG of `doc` (see [`SaveFormat::Png`]).
+pub fn encode_full_png(doc: &Document) -> Result<Vec<u8>, IoError> {
+    // The image and the project are encoded at the same time.
+    let (mut png, project) =
+        rayon::join(|| crate::png::encode(&doc.flatten(), PNG_LEVEL), || keeps_project(doc).then(|| ora::write_editable(doc)).transpose());
+    if let Some(project) = project? {
+        crate::png::embed_project(&mut png, &project);
+    }
+    Ok(png)
+}
+
 /// Saves the document in `format` (images are flattened).
 pub fn save(doc: &Document, path: &Path, format: SaveFormat) -> Result<u64, IoError> {
     let bytes = match format {
         SaveFormat::Ora => ora::write(doc)?,
+        SaveFormat::Png => encode_full_png(doc)?,
         f => encode(&doc.flatten(), f)?,
     };
     write_atomic(path, &bytes)?;
@@ -352,6 +397,196 @@ mod tests {
         let opened = open(&path).unwrap();
         assert_eq!(opened.save_format, Some(SaveFormat::Webp));
         assert!(!opened.document.background().visible);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn objects() -> Vec<crate::vector::VectorShape> {
+        use crate::geom::{Point, RectF};
+        use crate::shapes::{ShapeKind, ShapePaint, ShapeStyle};
+        use crate::text::{TextAlign, TextStyle};
+        use crate::vector::{ShapeGeom, VectorShape};
+        let paint = ShapePaint {
+            outline: ShapeStyle::Textured(crate::brush::Texture::Crayon),
+            fill: ShapeStyle::Solid,
+            width: 3.5,
+            outline_color: Color::rgba(1, 2, 3, 200),
+            fill_color: Color::rgb(255, 0, 0),
+            opacity: 0.75,
+        };
+        let style = TextStyle {
+            family: "Sans & \"Serif\"".into(),
+            size_pt: 12.5,
+            bold: true,
+            italic: false,
+            underline: true,
+            strikethrough: false,
+            align: TextAlign::Center,
+            color: Color::rgb(0, 0, 255),
+            background: Some(Color::rgb(9, 9, 9)),
+            opacity: 1.0,
+        };
+        let text_paint = ShapePaint::for_text(&style);
+        let canvas = (40, 30);
+        vec![
+            VectorShape::new(
+                ShapeGeom::Box { kind: ShapeKind::Star5, rect: RectF::from_xywh(2.25, 3.0, 10.0, 8.0), angle: 12.5, points: None },
+                paint,
+                canvas,
+            ),
+            VectorShape::new(
+                ShapeGeom::Box {
+                    kind: ShapeKind::Polygon,
+                    rect: RectF::from_xywh(5.0, 5.0, 10.0, 10.0),
+                    angle: 0.0,
+                    points: Some(vec![(0.0, 0.0), (1.0, 0.5), (0.1, 1.0)]),
+                },
+                paint,
+                canvas,
+            ),
+            VectorShape::new(ShapeGeom::Line { a: Point::new(0.5, 1.0), b: Point::new(30.0, 20.0) }, paint, canvas),
+            VectorShape::new(
+                ShapeGeom::Curve {
+                    a: Point::new(1.0, 1.0),
+                    b: Point::new(30.0, 2.0),
+                    c1: Point::new(5.0, 20.0),
+                    c2: Point::new(20.0, 25.0),
+                },
+                paint,
+                canvas,
+            ),
+            VectorShape::new(
+                ShapeGeom::Arrow { points: vec![Point::new(1.0, 1.0), Point::new(10.0, 1.0), Point::new(10.0, 9.0)] },
+                paint,
+                canvas,
+            ),
+            VectorShape::new(
+                ShapeGeom::Text {
+                    rect: RectF::from_xywh(4.0, 4.0, 30.0, 20.0),
+                    angle: 0.0,
+                    text: "a < b & c\r\n  two\tlines ".into(),
+                    style: text_paint.text_style(&style),
+                    auto_size: false,
+                },
+                text_paint,
+                canvas,
+            ),
+        ]
+    }
+
+    #[test]
+    fn full_png_keeps_layers_and_objects() {
+        let dir = std::env::temp_dir().join(format!("bgpaint-full-png-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut doc = Document::new(40, 30).unwrap();
+        doc.set_vector_mode(true);
+        doc.edit_active(doc.bounds(), |p| raster::fill_region(p, PixelRect::new(0, 0, 4, 4), Color::rgb(0, 200, 0)));
+        for o in objects() {
+            doc.add_object(o);
+        }
+        doc.add_layer();
+        doc.rename_layer(1, "Top".into());
+        doc.set_layer_visible(1, false);
+        let path = dir.join("v.png");
+        save(&doc, &path, SaveFormat::Png).unwrap();
+
+        // Any program sees the image as it looks.
+        let bytes = std::fs::read(&path).unwrap();
+        let other = image::load_from_memory(&bytes).unwrap().into_rgba8();
+        let flat = doc.flatten();
+        assert_eq!((other.width(), other.height()), (40, 30));
+        assert_eq!(other.as_raw(), &raster::to_straight_rgba(&flat));
+        assert_eq!(decode(&bytes, "png").unwrap().data(), flat.data());
+
+        let opened = open(&path).unwrap();
+        assert_eq!(opened.save_format, Some(SaveFormat::Png));
+        let back = opened.document;
+        assert!(back.vector_mode());
+        assert_eq!(back.layers().len(), 2);
+        assert_eq!(back.layers()[1].name, "Top");
+        assert!(!back.layers()[1].visible);
+        assert_eq!(raster::get_pixel(&back.layers()[0].pixels, 1, 1), Some(Color::rgb(0, 200, 0)));
+        let (a, b) = (&doc.layers()[0].objects, &back.layers()[0].objects);
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.iter().zip(b) {
+            assert_eq!(a.geom, b.geom);
+            assert_eq!(a.paint, b.paint);
+        }
+        assert_eq!(back.flatten().data(), flat.data());
+
+        // The optimized PNG is only the image.
+        save(&doc, &path, SaveFormat::PngOptimized).unwrap();
+        let opened = open(&path).unwrap();
+        assert_eq!(opened.document.layers().len(), 1);
+        assert!(opened.document.layers()[0].objects.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_plain_image_saves_as_a_plain_png() {
+        let doc = Document::from_image(sample());
+        assert!(!keeps_project(&doc));
+        let png = encode_full_png(&doc).unwrap();
+        assert!(crate::png::embedded_project(&png).is_none());
+    }
+
+    #[test]
+    fn text_with_control_characters_keeps_the_project_readable() {
+        let dir = std::env::temp_dir().join(format!("bgpaint-control-chars-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut doc = Document::new(40, 30).unwrap();
+        doc.set_vector_mode(true);
+        let mut text = objects().pop().unwrap();
+        if let crate::vector::ShapeGeom::Text { text: t, .. } = &mut text.geom {
+            *t = "soft\u{0B}break\u{0C}page\u{1B}".into();
+        }
+        doc.add_object(text);
+        doc.add_layer();
+        doc.rename_layer(1, "odd\u{0}name".into());
+        let path = dir.join("c.png");
+        save(&doc, &path, SaveFormat::Png).unwrap();
+        let back = open(&path).unwrap().document;
+        assert_eq!(back.layers().len(), 2);
+        assert_eq!(back.layers()[1].name, "oddname");
+        assert_eq!(back.layers()[0].objects.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_project_that_no_longer_matches_the_image_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("bgpaint-stale-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut doc = Document::new(40, 30).unwrap();
+        doc.add_layer();
+        let project = ora::write_editable(&doc).unwrap();
+        // Another program resized the image but kept the chunk.
+        let mut png = crate::png::encode(&sample(), PNG_LEVEL);
+        crate::png::embed_project(&mut png, &project);
+        let path = dir.join("s.png");
+        std::fs::write(&path, &png).unwrap();
+        let opened = open(&path).unwrap();
+        // A plain "Save" must not silently replace the file and the project it still holds.
+        assert_eq!(opened.save_format, None);
+        let back = opened.document;
+        assert_eq!((back.width(), back.height()), (8, 6));
+        assert_eq!(back.layers().len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_project_is_not_replaced_by_a_plain_save() {
+        let dir = std::env::temp_dir().join(format!("bgpaint-damaged-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut doc = Document::new(40, 30).unwrap();
+        doc.add_layer();
+        let mut png = encode_full_png(&doc).unwrap();
+        // One byte of the project (the chunk after the fingerprint) goes bad.
+        let second = png.windows(4).enumerate().filter(|(_, w)| *w == b"bgPJ").nth(1).unwrap().0;
+        png[second + 4] ^= 0xFF;
+        let path = dir.join("d.png");
+        std::fs::write(&path, &png).unwrap();
+        let opened = open(&path).unwrap();
+        assert_eq!(opened.save_format, None);
+        assert_eq!(opened.document.layers().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

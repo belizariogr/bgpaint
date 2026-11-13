@@ -216,8 +216,7 @@ impl PaintApp {
         let vector_mode = app.settings.vector_mode;
         app.doc.set_vector_mode(vector_mode);
         if vector_mode {
-            app.tool = crate::tools::Tool::Shape;
-            app.tools.vector_pointer = true;
+            app.hold_vector_pointer();
         }
         if app.settings.check_updates && crate::update::automatic_checks_allowed() {
             app.updater.check(&cc.egui_ctx, false);
@@ -266,11 +265,26 @@ impl PaintApp {
         self.toast = Some((text.into(), Instant::now()));
     }
 
+    /// Picks the vector Pointer, with nothing in progress (a new or just opened document, or
+    /// after committing the operation in progress).
+    pub(crate) fn hold_vector_pointer(&mut self) {
+        self.tool = crate::tools::Tool::Shape;
+        self.tools.vector_pointer = true;
+    }
+
     /// Replaces the document (new/open), resetting history and view.
     pub fn set_document(&mut self, mut doc: Document) {
         self.cancel_interaction();
-        doc.set_vector_mode(self.settings.vector_mode);
+        // A file saved in vector mode (a full PNG with its objects) opens in vector mode, with the
+        // Pointer in hand; other documents start in the vector mode last picked.
+        let from_vector_file = doc.vector_mode();
+        if !from_vector_file {
+            doc.set_vector_mode(self.settings.vector_mode);
+        }
         self.doc = doc;
+        if from_vector_file {
+            self.hold_vector_pointer();
+        }
         self.history.clear();
         self.file.saved_state = self.history.state_id();
         self.view.reset();

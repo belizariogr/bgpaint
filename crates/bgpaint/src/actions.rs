@@ -33,8 +33,9 @@ impl PaintApp {
             Command::Exit => self.begin_exit(),
             Command::Undo => {
                 if self.active.is_idle() {
+                    let vector = self.doc.vector_mode();
                     self.history.undo(&mut self.doc);
-                    self.remember_vector_mode();
+                    self.after_history_step(ctx, vector);
                 } else {
                     // Undo first discards the operation in progress, like Paint.
                     self.cancel_interaction();
@@ -42,8 +43,9 @@ impl PaintApp {
             }
             Command::Redo => {
                 self.commit_interaction();
+                let vector = self.doc.vector_mode();
                 self.history.redo(&mut self.doc);
-                self.remember_vector_mode();
+                self.after_history_step(ctx, vector);
             }
             Command::Cut => self.cut(),
             Command::Copy => self.copy(),
@@ -85,8 +87,7 @@ impl PaintApp {
             }
             Command::SetVectorPointer => {
                 self.commit_interaction();
-                self.set_tool(Tool::Shape);
-                self.tools.vector_pointer = true;
+                self.hold_vector_pointer();
             }
             Command::SetOutline(s) => {
                 self.tools.outline = s;
@@ -205,6 +206,20 @@ impl PaintApp {
 
     fn layer_index(&self, i: usize) -> usize {
         if i == usize::MAX { self.doc.active_index() } else { i }
+    }
+
+    /// After an undo or redo: when it turned vector mode back on (undoing "Vector" off brings the
+    /// objects back), the Pointer is picked so they can be grabbed right away.
+    /// Only a step that changed vector mode is remembered: a document opened in vector mode from
+    /// a file differs from the remembered mode without the user picking it.
+    fn after_history_step(&mut self, ctx: &egui::Context, vector_before: bool) {
+        if vector_before == self.doc.vector_mode() {
+            return;
+        }
+        if self.doc.vector_mode() {
+            self.execute(ctx, Command::SetVectorPointer);
+        }
+        self.remember_vector_mode();
     }
 
     /// Saves the document's vector mode as the one new documents and the next start use, when

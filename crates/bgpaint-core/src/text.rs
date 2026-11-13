@@ -197,7 +197,11 @@ pub fn rasterize_box(text: &str, style: &TextStyle, rect: RectF, angle: f32, can
 /// Renders `buffer` for a `width`×`height` box, inside its side padding, with the optional
 /// background fill. Text taller than the box makes the pixmap taller; the fill stays in the box.
 pub fn render(fonts: &mut Fonts, buffer: &mut Buffer, style: &TextStyle, width: u32, height: u32) -> Pixmap {
-    let full = height.max(content_height(buffer).ceil() as u32);
+    // Never larger than the largest image: text far taller than its box (a damaged or crafted
+    // file) is cut off rather than allocated.
+    let width = width.clamp(1, raster::MAX_SIDE);
+    let max_rows = (raster::MAX_AREA / u64::from(width)).min(u64::from(raster::MAX_SIDE)) as u32;
+    let full = height.max(content_height(buffer).ceil() as u32).min(max_rows);
     let mut out = raster::pixmap(width, full);
     if let Some(bg) = style.background
         && let Some(area) = tiny_skia::Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
