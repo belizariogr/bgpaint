@@ -19,6 +19,7 @@ pub mod selection;
 pub mod shapes;
 pub mod text;
 pub mod vector;
+pub(crate) mod vector_xml;
 
 pub use cosmic_text;
 pub use tiny_skia;

@@ -142,6 +142,7 @@ impl NativeMenu {
         let save = b.item(tr.save, Command::Save, cmd(Code::KeyS));
         let formats = [
             (tr.png_image, SaveFormat::Png),
+            (tr.png_optimized, SaveFormat::PngOptimized),
             (tr.jpeg_image, SaveFormat::Jpeg),
             (tr.bmp_image, SaveFormat::Bmp),
             (tr.gif_image, SaveFormat::Gif),

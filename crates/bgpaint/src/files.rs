@@ -320,15 +320,20 @@ impl PaintApp {
             let first = formats[0];
             let mut d = rfd::AsyncFileDialog::new().set_file_name(format!("{stem}.{}", first.extensions()[0]));
             for f in &formats {
-                let name =
-                    if *f == SaveFormat::Ora { tr.paint_project.to_owned() } else { format!("{} (*.{})", f.name(), f.extensions()[0]) };
+                let name = match f {
+                    SaveFormat::Ora => tr.paint_project.to_owned(),
+                    SaveFormat::PngOptimized => format!("{} (*.png)", tr.png_optimized),
+                    f => format!("{} (*.{})", f.name(), f.extensions()[0]),
+                };
                 d = d.add_filter(name, f.extensions());
             }
             if let Some(dir) = dir {
                 d = d.set_directory(dir);
             }
             let mut path = pollster::block_on(d.save_file())?.path().to_path_buf();
-            let chosen = SaveFormat::from_path(&path).filter(|f| formats.contains(f));
+            // Matched among the offered formats (two of them share "png"), so a name the dialog
+            // confirmed is kept as typed.
+            let chosen = SaveFormat::from_path_among(&path, &formats);
             let fmt = match chosen {
                 Some(f) => f,
                 None => {

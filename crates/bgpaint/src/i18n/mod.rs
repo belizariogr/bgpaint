@@ -33,6 +33,8 @@ pub struct Strings {
     pub save_as: &'static str,
     pub save_as_project: &'static str,
     pub png_image: &'static str,
+    /// The PNG with only the image (no layers or editable objects).
+    pub png_optimized: &'static str,
     pub jpeg_image: &'static str,
     pub bmp_image: &'static str,
     pub gif_image: &'static str,

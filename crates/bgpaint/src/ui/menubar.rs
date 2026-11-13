@@ -221,6 +221,7 @@ impl PaintApp {
                         tr.save_as,
                         vec![
                             Entry::item(None, tr.png_image, Command::SaveAs(Some(SaveFormat::Png))),
+                            Entry::item(None, tr.png_optimized, Command::SaveAs(Some(SaveFormat::PngOptimized))),
                             Entry::item(None, tr.jpeg_image, Command::SaveAs(Some(SaveFormat::Jpeg))),
                             Entry::item(None, tr.bmp_image, Command::SaveAs(Some(SaveFormat::Bmp))),
                             Entry::item(None, tr.gif_image, Command::SaveAs(Some(SaveFormat::Gif))),

@@ -13,6 +13,12 @@ use tiny_skia::Pixmap;
 
 /// The chunk listing the strips.
 const INDEX: &[u8; 4] = b"bgPS";
+/// The chunks holding an editable project (layers and vector objects) in a full PNG. Ancillary
+/// and private, so every other program shows the image and ignores them; not safe to copy, so an
+/// editor that changes the image drops them rather than keeping a project that no longer matches.
+/// The first one holds a fingerprint of the image (see [`image_fingerprint`]) for editors that
+/// keep them anyway; the project follows.
+const PROJECT: &[u8; 4] = b"bgPJ";
 /// Rows per independently compressed strip.
 const STRIP: usize = 128;
 /// Largest IDAT chunk written.
@@ -157,34 +163,73 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
+const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+
+/// One chunk of a PNG.
+struct Chunk<'a> {
+    kind: [u8; 4],
+    data: &'a [u8],
+    crc: u32,
+}
+
+impl Chunk<'_> {
+    fn intact(&self) -> bool {
+        let mut h = crc32fast::Hasher::new();
+        h.update(&self.kind);
+        h.update(self.data);
+        h.finalize() == self.crc
+    }
+}
+
+/// The chunk starting at byte `at` and where the next one starts.
+fn chunk_at(bytes: &[u8], at: usize) -> Option<(Chunk<'_>, usize)> {
+    let len = u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize;
+    let kind: [u8; 4] = bytes.get(at + 4..at + 8)?.try_into().ok()?;
+    let data = bytes.get(at + 8..at + 8 + len)?;
+    let crc = u32::from_be_bytes(bytes.get(at + 8 + len..at + 12 + len)?.try_into().ok()?);
+    Some((Chunk { kind, data, crc }, at + 12 + len))
+}
+
+/// The chunks of a PNG in order, up to and including `IEND`. A truncated chunk (or bytes that
+/// are not a PNG) gives one `None`, and nothing after it.
+fn chunks(bytes: &[u8]) -> impl Iterator<Item = Option<Chunk<'_>>> {
+    let png = bytes.starts_with(SIGNATURE);
+    let mut pos = Some(SIGNATURE.len());
+    std::iter::from_fn(move || {
+        let at = pos.take()?;
+        let (chunk, next) = match png.then(|| chunk_at(bytes, at)).flatten() {
+            Some(c) => c,
+            None => return Some(None),
+        };
+        if chunk.kind != *b"IEND" {
+            pos = Some(next);
+        }
+        Some(Some(chunk))
+    })
+}
+
 /// Decodes a PNG written by [`encode`] on every core. `None` for any other PNG (or a damaged
 /// one), which the usual decoder then handles.
 pub fn decode(bytes: &[u8]) -> Option<Pixmap> {
-    let mut pos = 8;
-    if bytes.get(..8)? != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
     let (mut ihdr, mut index, mut idat) = (None, None, Vec::new());
-    loop {
-        let len = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
-        let kind: [u8; 4] = bytes.get(pos + 4..pos + 8)?.try_into().ok()?;
-        let data = bytes.get(pos + 8..pos + 8 + len)?;
-        let crc = u32::from_be_bytes(bytes.get(pos + 8 + len..pos + 12 + len)?.try_into().ok()?);
-        let mut h = crc32fast::Hasher::new();
-        h.update(&kind);
-        h.update(data);
-        if h.finalize() != crc {
+    // The chunks end at IEND, or at a damaged one that makes this return.
+    for c in chunks(bytes) {
+        let c = c?;
+        // The project plays no part in the image (it is checked when it is read).
+        if c.kind == *PROJECT {
+            continue;
+        }
+        if !c.intact() {
             return None;
         }
-        match &kind {
-            b"IHDR" => ihdr = Some(data),
-            b"IDAT" => idat.push(data),
-            b"IEND" => break,
-            k if k == INDEX => index = Some(data),
+        match &c.kind {
+            b"IHDR" => ihdr = Some(c.data),
+            b"IDAT" => idat.push(c.data),
+            b"IEND" => {}
+            k if k == INDEX => index = Some(c.data),
             // Anything else (gamma, color profiles...) is left to the full decoder.
             _ => return None,
         }
-        pos += 12 + len;
     }
     let ihdr = ihdr?;
     let index = index?;
@@ -312,6 +357,70 @@ fn adler32_combine(a1: u32, a2: u32, len2: usize) -> u32 {
     ((s2 as u32) << 16) | s1 as u32
 }
 
+/// A fingerprint of the image as stored: the checksums of its header and data chunks, which
+/// change with any change to the image (each covers its chunk's bytes).
+fn image_fingerprint(bytes: &[u8]) -> [u8; 4] {
+    let mut h = crc32fast::Hasher::new();
+    for c in chunks(bytes).map_while(|c| c).filter(|c| c.kind == *b"IHDR" || c.kind == *b"IDAT") {
+        h.update(&c.crc.to_be_bytes());
+    }
+    h.finalize().to_be_bytes()
+}
+
+/// Adds `project` to a PNG written by [`encode`] (which ends right after its `IEND` chunk), just
+/// before its end, after the image's fingerprint, in chunks of at most [`CHUNK`] bytes (a PNG
+/// chunk cannot exceed 2 GiB, and readers warn about large ancillary ones).
+pub fn embed_project(png: &mut Vec<u8>, project: &[u8]) {
+    const IEND: usize = 12;
+    debug_assert!(png.len() >= 8 + IEND && png[png.len() - 8..png.len() - 4] == *b"IEND", "not a PNG ending with IEND");
+    let fingerprint = image_fingerprint(png);
+    let end = png.split_off(png.len() - IEND);
+    png.reserve(16 + project.len() + project.len().div_ceil(CHUNK) * 12 + IEND);
+    chunk(png, PROJECT, &fingerprint);
+    for part in project.chunks(CHUNK) {
+        chunk(png, PROJECT, part);
+    }
+    png.extend_from_slice(&end);
+}
+
+/// The project embedded in a PNG by [`embed_project`], if there is one, it is intact and the
+/// image is still the one it was saved with.
+pub fn embedded_project(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    let mut parts = Vec::new();
+    for c in chunks(bytes) {
+        let c = c?;
+        if c.kind == *PROJECT {
+            if !c.intact() {
+                return None;
+            }
+            parts.push(c.data);
+        }
+    }
+    let (fingerprint, parts) = parts.split_first()?;
+    if *fingerprint != image_fingerprint(bytes) {
+        return None;
+    }
+    match parts {
+        [] => None,
+        [one] => Some((*one).into()),
+        _ => Some(parts.concat().into()),
+    }
+}
+
+/// Whether the PNG holds project chunks, intact or not (see [`embedded_project`]).
+pub fn has_project(bytes: &[u8]) -> bool {
+    chunks(bytes).map_while(|c| c).any(|c| c.kind == *PROJECT)
+}
+
+/// The width and height of a PNG, from its header.
+pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let ihdr = chunks(bytes).next()??;
+    if ihdr.kind != *b"IHDR" || ihdr.data.len() != 13 {
+        return None;
+    }
+    Some((u32::from_be_bytes(ihdr.data[0..4].try_into().ok()?), u32::from_be_bytes(ihdr.data[4..8].try_into().ok()?)))
+}
+
 fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());
     out.extend_from_slice(kind);
@@ -368,6 +477,37 @@ mod tests {
         let mut other = Vec::new();
         image::codecs::png::PngEncoder::new(&mut other).write_image(&[1, 2, 3, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
         assert!(decode(&other).is_none());
+    }
+
+    #[test]
+    fn a_large_project_is_split_into_chunks_and_read_back_whole() {
+        let p = image(40, 30, true);
+        let project: Vec<u8> = (0..CHUNK * 2 + 12_345).map(|i| (i * 31 + i / 7) as u8).collect();
+        let mut bytes = encode(&p, 6);
+        embed_project(&mut bytes, &project);
+        assert!(embedded_project(&bytes).unwrap()[..] == project[..]);
+        assert_eq!(dimensions(&bytes), Some((40, 30)));
+        // Other programs and the fast decoder still see the image.
+        let back = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).unwrap().into_rgba8();
+        assert!(back.as_raw() == &raster::to_straight_rgba(&p));
+        assert!(decode(&bytes).unwrap().data() == p.data());
+    }
+
+    #[test]
+    fn a_project_kept_by_a_program_that_changed_the_image_is_ignored() {
+        let p = image(40, 30, true);
+        let mut full = encode(&p, 6);
+        let start = full.len() - 12;
+        embed_project(&mut full, b"project");
+        assert!(embedded_project(&full).unwrap()[..] == b"project"[..]);
+        // The same size, one pixel changed, the project's chunks copied over unchanged.
+        let mut q = p.clone();
+        q.data_mut()[..4].copy_from_slice(&[1, 2, 3, 255]);
+        let mut other = encode(&q, 6);
+        let at = other.len() - 12;
+        other.splice(at..at, full[start..full.len() - 12].iter().copied());
+        assert!(embedded_project(&other).is_none());
+        assert!(decode(&other).unwrap().data() == q.data());
     }
 
     #[test]
