@@ -4,8 +4,10 @@
 
 use crate::color::Color;
 use crate::document::{Background, Document};
-use crate::io::{IoError, SaveFormat, decode, encode};
+use crate::io::{IoError, PNG_LEVEL, decode};
+use crate::png;
 use crate::raster;
+use rayon::prelude::*;
 use std::io::{Cursor, Read, Write};
 
 const MIMETYPE: &str = "image/openraster";
@@ -24,6 +26,30 @@ fn zip_err(e: zip::result::ZipError) -> IoError {
 }
 
 pub fn write(doc: &Document) -> Result<Vec<u8>, IoError> {
+    // Every image is encoded at once, on all cores; the zip is written afterwards.
+    enum Part {
+        Layer(usize),
+        Background,
+        Merged,
+    }
+    let mut parts: Vec<Part> = (0..doc.layers().len()).map(Part::Layer).collect();
+    parts.extend([Part::Background, Part::Merged]);
+    let bg = doc.background();
+    let encoded: Vec<Vec<Vec<u8>>> = parts
+        .par_iter()
+        .map(|part| match part {
+            // Vector objects are saved drawn into their layer: the format only stores images.
+            Part::Layer(i) => vec![png::encode(&doc.layer_image(*i), PNG_LEVEL)],
+            Part::Background => vec![png::encode_solid(doc.width(), doc.height(), bg.color.premultiplied(), PNG_LEVEL)],
+            Part::Merged => {
+                let merged = doc.flatten();
+                let (tw, th) = fit(merged.width(), merged.height(), 256);
+                let thumb = raster::thumbnail(&merged, tw, th);
+                vec![png::encode(&merged, PNG_LEVEL), png::encode(&thumb, PNG_LEVEL)]
+            }
+        })
+        .collect();
+
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let deflated = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -34,8 +60,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, IoError> {
     for (i, layer) in doc.layers().iter().enumerate().rev() {
         let src = format!("data/layer{i}.png");
         zip.start_file(src.as_str(), stored).map_err(zip_err)?;
-        // Vector objects are saved drawn into their layer: the format only stores images.
-        zip.write_all(&encode(&doc.layer_image(i), SaveFormat::Png)?)?;
+        zip.write_all(&encoded[i][0])?;
         stack.push_str(&format!(
             "  <layer name=\"{}\" src=\"{src}\" x=\"0\" y=\"0\" opacity=\"1.0\" visibility=\"{}\"{}/>\n",
             escape(&layer.name),
@@ -43,11 +68,9 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, IoError> {
             if i == doc.active_index() { " selected=\"true\"" } else { "" },
         ));
     }
-    let bg = doc.background();
-    let mut bg_pixels = raster::pixmap(doc.width(), doc.height());
-    bg_pixels.fill(bg.color.to_skia());
+    let n = doc.layers().len();
     zip.start_file("data/background.png", stored).map_err(zip_err)?;
-    zip.write_all(&encode(&bg_pixels, SaveFormat::Png)?)?;
+    zip.write_all(&encoded[n][0])?;
     stack.push_str(&format!(
         "  <layer name=\"Background\" src=\"data/background.png\" x=\"0\" y=\"0\" opacity=\"1.0\" visibility=\"{}\" bgpaint:background=\"{}\"/>\n",
         if bg.visible { "visible" } else { "hidden" },
@@ -61,12 +84,10 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, IoError> {
     zip.start_file("stack.xml", deflated).map_err(zip_err)?;
     zip.write_all(xml.as_bytes())?;
 
-    let merged = doc.flatten();
     zip.start_file("mergedimage.png", stored).map_err(zip_err)?;
-    zip.write_all(&encode(&merged, SaveFormat::Png)?)?;
-    let (tw, th) = fit(merged.width(), merged.height(), 256);
+    zip.write_all(&encoded[n + 1][0])?;
     zip.start_file("Thumbnails/thumbnail.png", stored).map_err(zip_err)?;
-    zip.write_all(&encode(&raster::resize(&merged, tw, th), SaveFormat::Png)?)?;
+    zip.write_all(&encoded[n + 1][1])?;
     Ok(zip.finish().map_err(zip_err)?.into_inner())
 }
 
@@ -87,7 +108,15 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
     let height = attr_u32(image, "h").ok_or_else(|| IoError::Decode("missing image height".into()))?;
     raster::try_pixmap(width, height)?;
 
-    let mut layers = Vec::new();
+    struct Entry {
+        name: String,
+        visible: bool,
+        x: i32,
+        y: i32,
+        opacity: f32,
+        data: Vec<u8>,
+    }
+    let mut entries = Vec::new();
     let mut background = None;
     // Flatten nested stacks; document order is top to bottom.
     for node in image.descendants().filter(|n| n.has_tag_name("layer")) {
@@ -100,15 +129,31 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
         }
         let mut data = Vec::new();
         zip.by_name(src).map_err(|e| bad(&e))?.read_to_end(&mut data)?;
-        let pixels = decode(&data, "png")?;
-        let x = node.attribute("x").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
-        let y = node.attribute("y").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
-        let opacity = node.attribute("opacity").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
-        let mut placed = raster::pixmap(width, height);
-        raster::draw_over(&mut placed, &pixels, x, y, opacity.clamp(0.0, 1.0));
-        let name = node.attribute("name").unwrap_or("").to_string();
-        layers.push((name, placed, visible));
+        entries.push(Entry {
+            name: node.attribute("name").unwrap_or("").to_string(),
+            visible,
+            x: node.attribute("x").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0),
+            y: node.attribute("y").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0),
+            opacity: node.attribute("opacity").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.0, 1.0),
+            data,
+        });
     }
+    // Decoded on all cores at once.
+    let mut layers = entries
+        .into_par_iter()
+        .map(|e| {
+            let pixels = decode(&e.data, "png")?;
+            // A layer that already covers the canvas as it is (the usual case) is used directly.
+            let placed = if (e.x, e.y, pixels.width(), pixels.height()) == (0, 0, width, height) && e.opacity == 1.0 {
+                pixels
+            } else {
+                let mut placed = raster::pixmap(width, height);
+                raster::draw_over(&mut placed, &pixels, e.x, e.y, e.opacity);
+                placed
+            };
+            Ok((e.name, placed, e.visible))
+        })
+        .collect::<Result<Vec<_>, IoError>>()?;
     layers.reverse();
     let background = background.unwrap_or_else(|| {
         // Foreign file: show a white background only if the image is fully opaque.

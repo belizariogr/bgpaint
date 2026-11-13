@@ -1,7 +1,9 @@
 //! Whole-pixmap and region operations on premultiplied RGBA [`Pixmap`]s.
 
+use crate::blend::{self, Px};
 use crate::color::Color;
 use crate::geom::PixelRect;
+use rayon::prelude::*;
 use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
 /// Largest supported canvas side, in pixels.
@@ -109,8 +111,16 @@ pub fn swap_region(dst: &mut Pixmap, buf: &mut Pixmap, x: i32, y: i32) {
 
 /// Composites `src` over `dst` at an integer offset.
 pub fn draw_over(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, opacity: f32) {
-    let paint = PixmapPaint { opacity, ..PixmapPaint::default() };
-    dst.draw_pixmap(x, y, src.as_ref(), &paint, Transform::identity(), None);
+    let w = dst.width() as usize;
+    let rows = PixelRect::new(0, y, 1, y + src.height() as i32).intersect(&PixelRect::new(0, 0, 1, dst.height() as i32));
+    if rows.is_empty() {
+        return;
+    }
+    let op = blend::opacity_u8(opacity);
+    let (d, _) = dst.data_mut().as_chunks_mut::<4>();
+    let first = rows.y0 as usize;
+    let part = &mut d[first * w..rows.y1 as usize * w];
+    blend::par_bands(part, w, blend::band_rows(w), |r0, band| blend::over_into(band, w, (first + r0) as i32, src, x, y, op));
 }
 
 /// Draws `src` transformed onto `dst` with smooth filtering.
@@ -152,24 +162,17 @@ pub fn get_pixel(p: &Pixmap, x: i32, y: i32) -> Option<Color> {
 
 pub fn flip_horizontal(p: &mut Pixmap) {
     let w = p.width() as usize;
-    for row in p.data_mut().chunks_exact_mut(w * 4) {
-        for x in 0..w / 2 {
-            let (a, b) = (x * 4, (w - 1 - x) * 4);
-            for c in 0..4 {
-                row.swap(a + c, b + c);
-            }
-        }
-    }
+    let (d, _) = p.data_mut().as_chunks_mut::<4>();
+    d.par_chunks_mut(w).for_each(<[Px]>::reverse);
 }
 
 pub fn flip_vertical(p: &mut Pixmap) {
-    let w = p.width() as usize * 4;
+    let w = p.width() as usize;
     let h = p.height() as usize;
-    let d = p.data_mut();
-    for y in 0..h / 2 {
-        let (top, bottom) = d.split_at_mut((h - 1 - y) * w);
-        top[y * w..(y + 1) * w].swap_with_slice(&mut bottom[..w]);
-    }
+    let (d, _) = p.data_mut().as_chunks_mut::<4>();
+    let (top, rest) = d.split_at_mut(h / 2 * w);
+    let bottom = &mut rest[(h % 2) * w..];
+    top.par_chunks_mut(w).zip(bottom.par_chunks_mut(w).rev()).for_each(|(a, b)| a.swap_with_slice(b));
 }
 
 /// Rotation by a multiple of 90 degrees.
@@ -180,6 +183,16 @@ pub enum QuarterTurn {
     Half,
 }
 
+impl QuarterTurn {
+    pub fn inverse(self) -> Self {
+        match self {
+            QuarterTurn::Cw90 => QuarterTurn::Ccw90,
+            QuarterTurn::Ccw90 => QuarterTurn::Cw90,
+            QuarterTurn::Half => QuarterTurn::Half,
+        }
+    }
+}
+
 pub fn rotate_quarter(src: &Pixmap, turn: QuarterTurn) -> Pixmap {
     let (w, h) = (src.width() as usize, src.height() as usize);
     let (nw, nh) = match turn {
@@ -187,21 +200,86 @@ pub fn rotate_quarter(src: &Pixmap, turn: QuarterTurn) -> Pixmap {
         _ => (h, w),
     };
     let mut out = pixmap(nw as u32, nh as u32);
-    let s = src.data();
-    let d = out.data_mut();
-    for y in 0..h {
-        for x in 0..w {
-            let (nx, ny) = match turn {
-                QuarterTurn::Cw90 => (h - 1 - y, x),
-                QuarterTurn::Ccw90 => (y, w - 1 - x),
-                QuarterTurn::Half => (w - 1 - x, h - 1 - y),
-            };
-            let so = (y * w + x) * 4;
-            let doff = (ny * nw + nx) * 4;
-            d[doff..doff + 4].copy_from_slice(&s[so..so + 4]);
+    let (s, _) = src.data().as_chunks::<4>();
+    let (d, _) = out.data_mut().as_chunks_mut::<4>();
+    // Bands of output rows; within a band, each source row is read in one contiguous run.
+    const BAND: usize = 32;
+    d.par_chunks_mut(nw * BAND).enumerate().for_each(|(b, band)| {
+        let ny0 = b * BAND;
+        let rows = band.len() / nw;
+        match turn {
+            QuarterTurn::Half => {
+                for (i, row) in band.chunks_exact_mut(nw).enumerate() {
+                    let sy = h - 1 - (ny0 + i);
+                    row.copy_from_slice(&s[sy * w..(sy + 1) * w]);
+                    row.reverse();
+                }
+            }
+            // out(nx, ny) = src(ny, h - 1 - nx)
+            QuarterTurn::Cw90 => {
+                for nx in 0..nw {
+                    let sy = h - 1 - nx;
+                    let src_row = &s[sy * w + ny0..sy * w + ny0 + rows];
+                    for (i, px) in src_row.iter().enumerate() {
+                        band[i * nw + nx] = *px;
+                    }
+                }
+            }
+            // out(nx, ny) = src(w - 1 - ny, nx)
+            QuarterTurn::Ccw90 => {
+                for nx in 0..nw {
+                    let src_row = &s[nx * w..(nx + 1) * w];
+                    for i in 0..rows {
+                        band[i * nw + nx] = src_row[w - 1 - (ny0 + i)];
+                    }
+                }
+            }
+        }
+    });
+    out
+}
+
+/// A lossless change of orientation of the whole image, which undo can reverse exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reorient {
+    FlipHorizontal,
+    FlipVertical,
+    Rotate(QuarterTurn),
+}
+
+impl Reorient {
+    pub fn inverse(self) -> Self {
+        match self {
+            Reorient::Rotate(t) => Reorient::Rotate(t.inverse()),
+            flip => flip,
         }
     }
-    out
+
+    /// How it maps a `w`×`h` image.
+    pub fn transform(self, w: u32, h: u32) -> Transform {
+        match self {
+            Reorient::FlipHorizontal => flip_transform(w, h, true),
+            Reorient::FlipVertical => flip_transform(w, h, false),
+            Reorient::Rotate(t) => rotate_quarter_transform(w, h, t),
+        }
+    }
+
+    /// Size of a `w`×`h` image once reoriented.
+    pub fn size(self, w: u32, h: u32) -> (u32, u32) {
+        match self {
+            Reorient::Rotate(QuarterTurn::Cw90 | QuarterTurn::Ccw90) => (h, w),
+            _ => (w, h),
+        }
+    }
+
+    /// Reorients `p`, in place when the size stays.
+    pub fn apply(self, p: &mut Pixmap) {
+        match self {
+            Reorient::FlipHorizontal => flip_horizontal(p),
+            Reorient::FlipVertical => flip_vertical(p),
+            Reorient::Rotate(t) => *p = rotate_quarter(p, t),
+        }
+    }
 }
 
 /// Smoothly resamples a pixmap to a new size.
@@ -224,29 +302,45 @@ pub fn resize(src: &Pixmap, width: u32, height: u32) -> Pixmap {
 pub fn thumbnail(src: &Pixmap, width: u32, height: u32) -> Pixmap {
     let (width, height) = (width.max(1), height.max(1));
     let mut out = pixmap(width, height);
-    let (sw, sh) = (src.width() as f32, src.height() as f32);
-    let (fx, fy) = (sw / width as f32, sh / height as f32);
+    let all = bounds(&out);
+    thumbnail_into(&mut out, src, (0, 0), (src.width(), src.height()), all);
+    out
+}
+
+/// Recomputes the pixels of `out` (a thumbnail of a `full`-sized image, as [`thumbnail`] makes
+/// it) inside `area`, sampling `src`, which holds the image's pixels from `origin` on. Samples
+/// falling outside `src` are clamped to its edge.
+pub fn thumbnail_into(out: &mut Pixmap, src: &Pixmap, origin: (i32, i32), full: (u32, u32), area: PixelRect) {
+    let area = area.intersect(&bounds(out));
+    if area.is_empty() {
+        return;
+    }
+    let width = out.width() as usize;
+    let (fx, fy) = (full.0 as f32 / out.width() as f32, full.1 as f32 / out.height() as f32);
     let n = 4usize;
     let s = src.data();
     let stride = src.width() as usize * 4;
-    for (i, px) in out.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
-        let (dx, dy) = ((i % width as usize) as f32, (i / width as usize) as f32);
-        let mut acc = [0u32; 4];
-        for sy in 0..n {
-            let y = (((dy + (sy as f32 + 0.5) / n as f32) * fy) as usize).min(src.height() as usize - 1);
-            for sx in 0..n {
-                let x = (((dx + (sx as f32 + 0.5) / n as f32) * fx) as usize).min(src.width() as usize - 1);
-                let o = y * stride + x * 4;
-                for c in 0..4 {
-                    acc[c] += u32::from(s[o + c]);
+    let (max_x, max_y) = (src.width() as i32 - 1, src.height() as i32 - 1);
+    let d = out.data_mut();
+    for dy in area.y0..area.y1 {
+        for dx in area.x0..area.x1 {
+            let mut acc = [0u32; 4];
+            for sy in 0..n {
+                let y = (((dy as f32 + (sy as f32 + 0.5) / n as f32) * fy) as i32 - origin.1).clamp(0, max_y) as usize;
+                for sx in 0..n {
+                    let x = (((dx as f32 + (sx as f32 + 0.5) / n as f32) * fx) as i32 - origin.0).clamp(0, max_x) as usize;
+                    let o = y * stride + x * 4;
+                    for c in 0..4 {
+                        acc[c] += u32::from(s[o + c]);
+                    }
                 }
             }
-        }
-        for c in 0..4 {
-            px[c] = (acc[c] / (n * n) as u32) as u8;
+            let o = (dy as usize * width + dx as usize) * 4;
+            for c in 0..4 {
+                d[o + c] = (acc[c] / (n * n) as u32) as u8;
+            }
         }
     }
-    out
 }
 
 /// Clamps color channels to alpha so a filtered buffer stays a valid premultiplied image.
@@ -262,7 +356,16 @@ pub fn fix_premultiplied(p: &mut Pixmap) {
 /// Applies an arbitrary affine transform, returning the transformed image on a canvas that fits it
 /// and the offset of that canvas relative to the source origin.
 pub fn transform_fit(src: &Pixmap, t: Transform) -> (Pixmap, i32, i32) {
-    let (w, h) = (src.width() as f32, src.height() as f32);
+    let (shifted, r) = fit_transform(src.width(), src.height(), t);
+    let mut out = pixmap(r.width(), r.height());
+    draw_transformed(&mut out, src, shifted, true);
+    (out, r.x0, r.y0)
+}
+
+/// `t` followed by the shift that brings a transformed `w`×`h` image to (0,0), and the area the
+/// image covers before that shift.
+pub fn fit_transform(w: u32, h: u32, t: Transform) -> (Transform, PixelRect) {
+    let (w, h) = (w as f32, h as f32);
     let mut pts = [
         tiny_skia::Point::from_xy(0.0, 0.0),
         tiny_skia::Point::from_xy(w, 0.0),
@@ -275,10 +378,7 @@ pub fn transform_fit(src: &Pixmap, t: Transform) -> (Pixmap, i32, i32) {
     let max_x = pts.iter().map(|p| p.x).fold(f32::MIN, f32::max);
     let max_y = pts.iter().map(|p| p.y).fold(f32::MIN, f32::max);
     let r = PixelRect::enclosing(min_x, min_y, max_x, max_y);
-    let mut out = pixmap(r.width(), r.height());
-    let shifted = t.post_translate(-r.x0 as f32, -r.y0 as f32);
-    draw_transformed(&mut out, src, shifted, true);
-    (out, r.x0, r.y0)
+    (t.post_translate(-r.x0 as f32, -r.y0 as f32), r)
 }
 
 /// Rotates by an arbitrary angle (degrees, clockwise) around the center, growing the canvas to fit.
@@ -287,11 +387,42 @@ pub fn rotate_degrees(src: &Pixmap, degrees: f32) -> Pixmap {
     transform_fit(src, Transform::from_rotate_at(degrees, cx, cy)).0
 }
 
+/// How [`rotate_degrees`] maps a `w`×`h` image.
+pub fn rotate_degrees_transform(w: u32, h: u32, degrees: f32) -> Transform {
+    fit_transform(w, h, Transform::from_rotate_at(degrees, w as f32 / 2.0, h as f32 / 2.0)).0
+}
+
 /// Skews horizontally and vertically by the given angles in degrees, growing the canvas to fit.
 pub fn skew_degrees(src: &Pixmap, deg_x: f32, deg_y: f32) -> Pixmap {
-    let kx = deg_x.to_radians().tan();
-    let ky = deg_y.to_radians().tan();
-    transform_fit(src, Transform::from_row(1.0, ky, kx, 1.0, 0.0, 0.0)).0
+    transform_fit(src, skew(deg_x, deg_y)).0
+}
+
+/// How [`skew_degrees`] maps a `w`×`h` image.
+pub fn skew_degrees_transform(w: u32, h: u32, deg_x: f32, deg_y: f32) -> Transform {
+    fit_transform(w, h, skew(deg_x, deg_y)).0
+}
+
+fn skew(deg_x: f32, deg_y: f32) -> Transform {
+    Transform::from_row(1.0, deg_y.to_radians().tan(), deg_x.to_radians().tan(), 1.0, 0.0, 0.0)
+}
+
+/// How [`rotate_quarter`] maps a `w`×`h` image.
+pub fn rotate_quarter_transform(w: u32, h: u32, turn: QuarterTurn) -> Transform {
+    let (w, h) = (w as f32, h as f32);
+    match turn {
+        QuarterTurn::Cw90 => Transform::from_row(0.0, 1.0, -1.0, 0.0, h, 0.0),
+        QuarterTurn::Ccw90 => Transform::from_row(0.0, -1.0, 1.0, 0.0, 0.0, w),
+        QuarterTurn::Half => Transform::from_row(-1.0, 0.0, 0.0, -1.0, w, h),
+    }
+}
+
+/// How [`flip_horizontal`] (or [`flip_vertical`]) maps a `w`×`h` image.
+pub fn flip_transform(w: u32, h: u32, horizontal: bool) -> Transform {
+    if horizontal {
+        Transform::from_row(-1.0, 0.0, 0.0, 1.0, w as f32, 0.0)
+    } else {
+        Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, h as f32)
+    }
 }
 
 /// Inverts the colors of every pixel (keeps alpha).
@@ -313,7 +444,7 @@ pub fn resize_canvas(src: &Pixmap, width: u32, height: u32, dx: i32, dy: i32) ->
 
 /// True if any pixel is not fully opaque.
 pub fn has_transparency(p: &Pixmap) -> bool {
-    p.data().as_chunks::<4>().0.iter().any(|px| px[3] != 255)
+    has_transparency_par(p)
 }
 
 /// True if every pixel is fully transparent.
@@ -337,21 +468,79 @@ pub fn opaque_bounds(p: &Pixmap) -> PixelRect {
 
 /// Straight-alpha RGBA bytes of the whole pixmap.
 pub fn to_straight_rgba(p: &Pixmap) -> Vec<u8> {
-    p.clone().take_demultiplied()
+    let mut out = vec![0u8; p.data().len()];
+    let (src, _) = p.data().as_chunks::<4>();
+    let (dst, _) = out.as_chunks_mut::<4>();
+    dst.par_chunks_mut(1 << 14).zip(src.par_chunks(1 << 14)).for_each(|(d, s)| {
+        for (d, s) in d.iter_mut().zip(s) {
+            *d = demultiply(*s);
+        }
+    });
+    out
+}
+
+/// A premultiplied pixel with straight alpha.
+#[inline]
+pub fn demultiply(p: Px) -> Px {
+    match p[3] {
+        0 => [0; 4],
+        255 => p,
+        a => {
+            let a = u32::from(a);
+            let un = |c: u8| ((u32::from(c) * 255 + a / 2) / a).min(255) as u8;
+            [un(p[0]), un(p[1]), un(p[2]), p[3]]
+        }
+    }
 }
 
 /// Builds a premultiplied pixmap from straight-alpha RGBA bytes.
 pub fn from_straight_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Pixmap, TooLarge> {
-    let mut p = try_pixmap(width, height)?;
-    for (d, s) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0.iter()) {
-        d.copy_from_slice(&Color::rgba(s[0], s[1], s[2], s[3]).premultiplied());
-    }
-    Ok(p)
+    from_straight_rgba_vec(width, height, rgba.to_vec())
+}
+
+/// Like [`from_straight_rgba`], premultiplying the buffer in place (no copy).
+pub fn from_straight_rgba_vec(width: u32, height: u32, mut rgba: Vec<u8>) -> Result<Pixmap, TooLarge> {
+    let err = TooLarge { width, height };
+    try_pixmap(width, height)?;
+    let (px, _) = rgba.as_chunks_mut::<4>();
+    px.par_chunks_mut(1 << 14).for_each(|c| {
+        for p in c {
+            if p[3] != 255 {
+                *p = Color::rgba(p[0], p[1], p[2], p[3]).premultiplied();
+            }
+        }
+    });
+    let size = tiny_skia::IntSize::from_wh(width, height).ok_or(err)?;
+    Pixmap::from_vec(rgba, size).ok_or(err)
+}
+
+/// True if any pixel is not fully opaque.
+pub fn has_transparency_par(p: &Pixmap) -> bool {
+    p.data().as_chunks::<4>().0.par_chunks(1 << 16).any(|c| c.iter().any(|px| px[3] != 255))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_thumbnail_matches_full_one() {
+        let src = numbered(301, 157);
+        let full = thumbnail(&src, 76, 40);
+        let mut patched = thumbnail(&pixmap(301, 157), 76, 40);
+        // The thumbnail pixels of an area, recomputed from a copy of just the source they sample.
+        let area = PixelRect::new(10, 5, 31, 22);
+        let (fx, fy) = (301.0 / 76.0, 157.0 / 40.0);
+        let r = PixelRect::new(
+            (area.x0 as f32 * fx) as i32,
+            (area.y0 as f32 * fy) as i32,
+            (area.x1 as f32 * fx).ceil() as i32,
+            (area.y1 as f32 * fy).ceil() as i32,
+        );
+        let region = copy_region(&src, r).unwrap();
+        thumbnail_into(&mut patched, &region, (r.x0, r.y0), (301, 157), area);
+        assert_eq!(copy_region(&full, area).unwrap().data(), copy_region(&patched, area).unwrap().data());
+    }
 
     fn numbered(w: u32, h: u32) -> Pixmap {
         let mut p = pixmap(w, h);

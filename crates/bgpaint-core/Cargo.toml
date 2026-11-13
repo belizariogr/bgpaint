@@ -17,3 +17,6 @@ resvg.workspace = true
 cosmic-text.workspace = true
 zip.workspace = true
 roxmltree.workspace = true
+rayon.workspace = true
+flate2.workspace = true
+crc32fast.workspace = true

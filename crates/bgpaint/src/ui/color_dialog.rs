@@ -340,7 +340,7 @@ impl PaintApp {
                         self.commit_interaction();
                         let before = self.doc.snapshot();
                         self.doc.set_background(bg);
-                        self.history.push("background color", vec![Change::document(before)]);
+                        self.history.push("background color", vec![Change::document(before, &self.doc)]);
                     }
                 }
             }

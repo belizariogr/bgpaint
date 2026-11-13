@@ -13,16 +13,18 @@ use bgpaint_core::geom::{PixelRect, Point, RectF};
 use bgpaint_core::history::Change;
 use bgpaint_core::raster;
 use bgpaint_core::selection::{SelectionMask, key_out};
-use bgpaint_core::shapes::RasterShape;
-use bgpaint_core::tiny_skia::Pixmap;
+use bgpaint_core::shapes::{self, RasterShape};
+use bgpaint_core::tiny_skia::{Pixmap, Transform};
 use egui::{Color32, Modifiers, PointerButton, Pos2, Stroke};
+use std::sync::Arc;
 
 /// Pixels lifted off the layer and being moved/transformed.
 struct Floating {
     /// Content as lifted (or pasted).
-    original: Pixmap,
-    /// `original` after "transparent selection" keyed out Color 2.
-    pixels: Pixmap,
+    original: Arc<Pixmap>,
+    /// `original` after "transparent selection" keyed out Color 2 (the same image when that is
+    /// off).
+    pixels: Arc<Pixmap>,
     /// Undo records already applied to the document (lift, Ctrl+drag stamps, canvas growth).
     changes: Vec<Change>,
 }
@@ -49,8 +51,10 @@ pub struct SelectOp {
     pub geom: BoxGeom,
     floating: Option<Floating>,
     drag: Option<SelDrag>,
-    /// Rendering of a transformed (scaled/rotated) floating selection.
-    raster: Option<RasterShape>,
+    /// Where a transformed (scaled/rotated) floating selection lands (on the canvas) and the
+    /// transform that draws its pixels there. It is drawn straight from the pixels into each
+    /// region the canvas asks for, so dragging a handle costs nothing until the result shows.
+    transformed: Option<(PixelRect, Transform)>,
     /// Position of an untransformed floating selection, drawn straight from its pixels (moving a
     /// large selection then costs no copies).
     exact: Option<(i32, i32)>,
@@ -59,19 +63,21 @@ pub struct SelectOp {
 
 impl ActivePreview for SelectOp {
     fn bounds(&self) -> PixelRect {
-        match (&self.exact, &self.floating, &self.raster) {
+        match (&self.exact, &self.floating, &self.transformed) {
             (Some((x, y)), Some(f), _) => {
                 PixelRect::from_xywh(*x, *y, f.pixels.width(), f.pixels.height()).clamp_to(self.canvas.0, self.canvas.1)
             }
-            (_, _, Some(r)) => r.bounds(),
+            (_, Some(_), Some((area, _))) => *area,
             _ => PixelRect::EMPTY,
         }
     }
 
     fn apply(&self, region: &mut Pixmap, rect: PixelRect) {
-        match (&self.exact, &self.floating, &self.raster) {
+        match (&self.exact, &self.floating, &self.transformed) {
             (Some((x, y)), Some(f), _) => raster::draw_over(region, &f.pixels, x - rect.x0, y - rect.y0, 1.0),
-            (_, _, Some(r)) => raster::draw_over(region, &r.pixmap, r.x - rect.x0, r.y - rect.y0, 1.0),
+            (_, Some(f), Some((area, t))) if !area.intersect(&rect).is_empty() => {
+                raster::draw_transformed(region, &f.pixels, t.post_translate(-rect.x0 as f32, -rect.y0 as f32), true);
+            }
             _ => {}
         }
     }
@@ -89,7 +95,7 @@ impl SelectOp {
     /// Renders the floating pixels at the current box; returns the area to redraw.
     fn update(&mut self) -> PixelRect {
         let before = self.bounds();
-        self.raster = None;
+        self.transformed = None;
         self.exact = None;
         if let Some(f) = &self.floating {
             let r = self.geom.rect;
@@ -97,10 +103,25 @@ impl SelectOp {
             if self.geom.angle == 0.0 && same_size {
                 self.exact = Some((r.min.x.round() as i32, r.min.y.round() as i32));
             } else {
-                self.raster = render_floating(&f.pixels, &self.geom, self.canvas);
+                let (whole, t) = shapes::box_transform(&f.pixels, r, self.geom.center(), self.geom.angle);
+                let area = whole.clamp_to(self.canvas.0, self.canvas.1);
+                self.transformed = Some((area, t.unwrap_or_else(|| Transform::from_translate(r.min.x, r.min.y))));
             }
         }
         before.union(&self.bounds())
+    }
+
+    /// The floating content as it shows, rendered once (to stamp or copy it).
+    fn rendered(&self) -> Option<RasterShape> {
+        let f = self.floating.as_ref()?;
+        match self.exact {
+            Some((x, y)) => {
+                let whole = PixelRect::from_xywh(x, y, f.pixels.width(), f.pixels.height());
+                let area = whole.clamp_to(self.canvas.0, self.canvas.1);
+                RasterShape::render(area, area != whole, |band, r| raster::paste_region(band, &f.pixels, x - r.x0, y - r.y0))
+            }
+            None => render_floating(&f.pixels, &self.geom, self.canvas),
+        }
     }
 
     fn pixel_rect(&self) -> PixelRect {
@@ -125,7 +146,7 @@ impl PaintApp {
             geom: BoxGeom::new(RectF::from_points(p, p)),
             floating: None,
             drag: Some(SelDrag::Create),
-            raster: None,
+            transformed: None,
             exact: None,
             canvas: (self.doc.width(), self.doc.height()),
         }
@@ -227,28 +248,26 @@ impl PaintApp {
         if !copy && let Some(c) = self.doc.edit_active(mask.rect, |layer| mask.clear(layer)) {
             changes.push(c);
         }
+        let original = Arc::new(original);
         let pixels = self.keyed(&original);
         op.floating = Some(Floating { original, pixels, changes });
         let d = op.update();
         self.preview_dirty.add(d);
     }
 
-    fn keyed(&self, original: &Pixmap) -> Pixmap {
-        let mut p = original.clone();
-        if self.tools.transparent_selection {
-            key_out(&mut p, self.colors.secondary);
+    fn keyed(&self, original: &Arc<Pixmap>) -> Arc<Pixmap> {
+        if !self.tools.transparent_selection {
+            return original.clone();
         }
-        p
+        let mut p = (**original).clone();
+        key_out(&mut p, self.colors.secondary);
+        Arc::new(p)
     }
 
     /// Draws the floating pixels into the layer without ending the selection.
     fn stamp_floating(&mut self, op: &mut SelectOp) {
-        let bounds = op.bounds();
-        if bounds.is_empty() {
-            return;
-        }
-        let full = PixelRect::from_size(op.canvas.0, op.canvas.1);
-        if let Some(c) = self.doc.edit_active(bounds, |layer| op.apply(layer, full))
+        let Some(r) = op.rendered() else { return };
+        if let Some(c) = self.doc.edit_active(r.bounds(), |layer| r.draw_into(layer, (0, 0)))
             && let Some(f) = &mut op.floating
         {
             f.changes.push(c);
@@ -307,9 +326,9 @@ impl PaintApp {
     fn selected_pixels(&self) -> Option<Pixmap> {
         let Active::Select(op) = &self.active else { return None };
         if let Some(f) = &op.floating {
-            return Some(match &op.raster {
-                Some(r) => r.pixmap.clone(),
-                None => f.pixels.clone(),
+            return Some(match op.exact {
+                Some(_) => (*f.pixels).clone(),
+                None => op.rendered()?.to_pixmap(),
             });
         }
         op.mask.as_ref()?.extract(&self.doc.layer_image(self.doc.active_index()))
@@ -352,7 +371,7 @@ impl PaintApp {
         if pixmap.width() > self.doc.width() || pixmap.height() > self.doc.height() {
             let before = self.doc.snapshot();
             self.doc.resize_canvas(self.doc.width().max(pixmap.width()), self.doc.height().max(pixmap.height()), 0, 0);
-            changes.push(Change::document(before));
+            changes.push(Change::document(before, &self.doc));
         }
         let (a, _) = self.view.visible_canvas();
         let x = a.x.max(0.0).floor().min((self.doc.width() - pixmap.width()) as f32);
@@ -362,8 +381,9 @@ impl PaintApp {
         op.drag = None;
         op.mask = Some(SelectionMask::rect(rect));
         op.geom = BoxGeom::new(RectF::from_xywh(x, y, pixmap.width() as f32, pixmap.height() as f32));
-        let pixels = self.keyed(&pixmap);
-        op.floating = Some(Floating { original: pixmap, pixels, changes });
+        let original = Arc::new(pixmap);
+        let pixels = self.keyed(&original);
+        op.floating = Some(Floating { original, pixels, changes });
         let d = op.update();
         self.preview_dirty.add(d);
         self.tool = Tool::Select;
@@ -432,11 +452,13 @@ impl PaintApp {
         if let Active::Select(op) = &mut self.active
             && let Some(f) = &mut op.floating
         {
-            let mut p = f.original.clone();
-            if on {
+            f.pixels = if on {
+                let mut p = (*f.original).clone();
                 key_out(&mut p, self.colors.secondary);
-            }
-            f.pixels = p;
+                Arc::new(p)
+            } else {
+                f.original.clone()
+            };
             let d = op.update();
             self.preview_dirty.add(d);
         }
@@ -458,7 +480,7 @@ impl PaintApp {
             self.doc.map_layers_shifted(-rect.x0, -rect.y0, |p| {
                 raster::copy_region(p, rect).unwrap_or_else(|| raster::pixmap(rect.width(), rect.height()))
             });
-            self.history.push("crop", vec![Change::document(before)]);
+            self.history.push("crop", vec![Change::document(before, &self.doc)]);
             return;
         }
         self.doc.map_layers(|p| {
@@ -474,7 +496,7 @@ impl PaintApp {
             }
             out
         });
-        self.history.push("crop", vec![Change::document(before)]);
+        self.history.push("crop", vec![Change::document(before, &self.doc)]);
     }
 
     /// Applies a pixel transform (rotate, flip, invert...) to the floating selection, if any.
@@ -488,9 +510,9 @@ impl PaintApp {
             // Bake a pending stretch first so the transform applies to what the user sees.
             let (cw, ch) = (op.geom.rect.width().round().max(1.0) as u32, op.geom.rect.height().round().max(1.0) as u32);
             if (cw, ch) != (fl.original.width(), fl.original.height()) {
-                fl.original = raster::resize(&fl.original, cw, ch);
+                fl.original = Arc::new(raster::resize(&fl.original, cw, ch));
             }
-            fl.original = f(&fl.original);
+            fl.original = Arc::new(f(&fl.original));
             fl.pixels = self.keyed(&fl.original);
             let c = op.geom.rect.center();
             let (w, h) = (fl.original.width() as f32, fl.original.height() as f32);

@@ -314,7 +314,10 @@ impl PaintApp {
 
     fn handle_close_request(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
-            if self.any_unsaved() {
+            if self.files.saving > 0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.files.exit_after_saves();
+            } else if self.any_unsaved() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.begin_exit();
             } else {
@@ -352,12 +355,22 @@ impl PaintApp {
     }
 
     fn paint_toast(&mut self, ctx: &egui::Context) {
-        let Some((text, at)) = &self.toast else { return };
-        let age = at.elapsed().as_secs_f32();
-        if age > 3.0 {
+        // Files being written or read show for as long as it takes.
+        let busy = if self.files.saving > 0 {
+            Some(self.tr.saving)
+        } else if !self.files.opening.is_empty() {
+            Some(self.tr.opening)
+        } else {
+            None
+        };
+        if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() > 3.0) {
             self.toast = None;
-            return;
         }
+        let text = match (busy, &self.toast) {
+            (Some(b), _) => b,
+            (None, Some((text, _))) => text.as_str(),
+            (None, None) => return,
+        };
         let t = &self.theme;
         egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Tooltip)
@@ -365,7 +378,7 @@ impl PaintApp {
             .interactable(false)
             .show(ctx, |ui| {
                 crate::ui::widgets::panel_frame(t).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
-                    ui.label(egui::RichText::new(text.as_str()).color(t.text).size(14.0));
+                    ui.label(egui::RichText::new(text).color(t.text).size(14.0));
                 });
             });
         ctx.request_repaint_after(std::time::Duration::from_millis(250));

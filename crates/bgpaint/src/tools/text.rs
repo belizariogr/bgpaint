@@ -13,7 +13,6 @@ use bgpaint_core::cosmic_text::{Action, Buffer, Cursor, Edit, Editor, Motion, Se
 use bgpaint_core::document::ActivePreview;
 use bgpaint_core::geom::{PixelRect, Point, RectF};
 use bgpaint_core::history::Change;
-use bgpaint_core::raster;
 use bgpaint_core::shapes::{RasterShape, ShapePaint};
 pub use bgpaint_core::text::fonts;
 use bgpaint_core::text::{self, Fonts, TextAlign, TextStyle};
@@ -96,8 +95,12 @@ impl ActivePreview for TextOp {
 
     fn apply(&self, region: &mut Pixmap, rect: PixelRect) {
         if let Some(r) = &self.raster {
-            raster::draw_over(region, &r.pixmap, r.x - rect.x0, r.y - rect.y0, 1.0);
+            r.draw_into(region, (rect.x0, rect.y0));
         }
+    }
+
+    fn rendered(&self) -> Option<&RasterShape> {
+        self.raster.as_ref()
     }
 
     fn above_objects(&self) -> bool {
@@ -381,7 +384,7 @@ impl PaintApp {
         if op.text().trim().is_empty() && op.style.background.is_none() {
             // A reopened object left with no words is deleted.
             if let Some(l) = op.lifted {
-                self.history.push("delete text", vec![Change::document(l.before)]);
+                self.history.push("delete text", vec![Change::objects(l.layer, l.before)]);
             }
             return;
         }
@@ -398,7 +401,7 @@ impl PaintApp {
             return;
         }
         let Some(r) = &op.raster else { return };
-        let change = self.doc.edit_active(r.bounds(), |layer| raster::draw_over(layer, &r.pixmap, r.x, r.y, 1.0));
+        let change = self.doc.edit_active(r.bounds(), |layer| r.draw_into(layer, (0, 0)));
         self.history.push_one("text", change);
     }
 

@@ -8,10 +8,9 @@ use crate::app::PaintApp;
 use crate::canvas::view::View;
 use crate::theme::Theme;
 use crate::ui::widgets;
-use bgpaint_core::document::{ActivePreview, DocState, LayerId};
+use bgpaint_core::document::{ActivePreview, LayerId};
 use bgpaint_core::geom::{PixelRect, Point, RectF};
 use bgpaint_core::history::Change;
-use bgpaint_core::raster;
 use bgpaint_core::shapes::{self, RasterShape, ShapeKind, ShapePaint};
 use bgpaint_core::text::{self, TextStyle};
 use bgpaint_core::tiny_skia::Pixmap;
@@ -132,11 +131,11 @@ enum Drag {
 
 /// A vector object taken off its layer to be edited.
 pub(super) struct Lifted {
-    layer: LayerId,
+    pub(super) layer: LayerId,
     index: usize,
     pub(super) original: VectorShape,
-    /// The document before the object was taken (the undo step of the edit).
-    pub(super) before: DocState,
+    /// The objects of the layer before the object was taken (the undo step of the edit).
+    pub(super) before: Vec<VectorShape>,
 }
 
 pub struct ShapeOp {
@@ -170,8 +169,12 @@ impl ActivePreview for ShapeOp {
 
     fn apply(&self, region: &mut Pixmap, rect: PixelRect) {
         if let Some(r) = &self.raster {
-            raster::draw_over(region, &r.pixmap, r.x - rect.x0, r.y - rect.y0, 1.0);
+            r.draw_into(region, (rect.x0, rect.y0));
         }
+    }
+
+    fn rendered(&self) -> Option<&RasterShape> {
+        self.raster.as_ref()
     }
 
     fn above_objects(&self) -> bool {
@@ -417,7 +420,7 @@ impl PaintApp {
 
     /// Takes object `index` of layer `layer` off the document, remembering how to put it back.
     pub(super) fn take_object_for_edit(&mut self, layer: usize, index: usize) -> Option<Lifted> {
-        let before = self.doc.snapshot();
+        let before = self.doc.layers().get(layer)?.objects.clone();
         self.doc.set_active(layer);
         let layer_id = self.doc.layers()[layer].id;
         let original = self.doc.take_object(layer, index)?;
@@ -658,7 +661,7 @@ impl PaintApp {
         }
         let Some(r) = op.raster.take() else { return };
         let bounds = r.bounds();
-        let change = self.doc.edit_active(bounds, |layer| raster::draw_over(layer, &r.pixmap, r.x, r.y, 1.0));
+        let change = self.doc.edit_active(bounds, |layer| r.draw_into(layer, (0, 0)));
         self.history.push_one("shape", change);
     }
 
@@ -678,19 +681,20 @@ impl PaintApp {
         // A shape moved (or drawn) entirely off the canvas shows nowhere: it is not kept.
         let visible = !shape.bounds().intersect(&self.doc.bounds()).is_empty();
         match lifted {
-            Some(l) if !visible => self.history.push("delete shape", vec![Change::document(l.before)]),
+            Some(l) if !visible => self.history.push("delete shape", vec![Change::objects(l.layer, l.before)]),
             Some(l) => {
                 let changed = !shape.same_as(&l.original);
                 self.doc.insert_object(l.layer, l.index, shape);
                 if changed {
-                    self.history.push("edit shape", vec![Change::document(l.before)]);
+                    self.history.push("edit shape", vec![Change::objects(l.layer, l.before)]);
                 }
             }
             None if !visible => {}
             None => {
-                let before = self.doc.snapshot();
+                let layer = self.doc.active_layer();
+                let (id, before) = (layer.id, layer.objects.clone());
                 self.doc.add_object(shape);
-                self.history.push(label, vec![Change::document(before)]);
+                self.history.push(label, vec![Change::objects(id, before)]);
             }
         }
     }
@@ -707,7 +711,7 @@ impl PaintApp {
     pub fn delete_shape(&mut self, op: ShapeOp) {
         self.preview_dirty.add(op.bounds());
         if let Some(l) = op.lifted {
-            self.history.push("delete shape", vec![Change::document(l.before)]);
+            self.history.push("delete shape", vec![Change::objects(l.layer, l.before)]);
         }
     }
 

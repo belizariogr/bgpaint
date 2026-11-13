@@ -1,10 +1,12 @@
 //! The layered document: a stack of transparent layers over an optional solid background. In
 //! vector mode a layer can also hold shapes as editable objects, drawn above its pixels.
 
+use crate::blend;
 use crate::color::Color;
 use crate::geom::Point;
 use crate::geom::{DirtyRect, PixelRect};
 use crate::history::Change;
+use crate::patch::Patch;
 use crate::raster::{self, TooLarge};
 use crate::vector::VectorShape;
 use std::borrow::Cow;
@@ -78,7 +80,7 @@ impl DocState {
 
 /// Something drawn on top of the active layer while a tool is in progress (a stroke, a floating
 /// selection, a shape being edited...). It is rendered exactly as it would be committed.
-pub trait ActivePreview {
+pub trait ActivePreview: Sync {
     /// Canvas area that the preview can touch.
     fn bounds(&self) -> PixelRect;
     /// Draws the preview into `region`, a copy of the active layer covering `rect` (canvas coords).
@@ -87,14 +89,48 @@ pub trait ActivePreview {
     fn above_objects(&self) -> bool {
         false
     }
+    /// The preview as a rendered shape, when it is one (drawn by [`Self::apply`]).
+    fn rendered(&self) -> Option<&crate::shapes::RasterShape> {
+        None
+    }
 }
 
-#[derive(Debug)]
+/// Stands for pixels a history snapshot does not keep.
+fn placeholder() -> Arc<Pixmap> {
+    static EMPTY: std::sync::OnceLock<Arc<Pixmap>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(raster::pixmap(1, 1))).clone()
+}
+
+/// A layer as it looks, read row by row (see [`Document::layer_look`]).
+pub struct LayerLook<'a> {
+    pixels: &'a Pixmap,
+    /// The rows crossed by vector objects (from the given row on), with the objects drawn.
+    band: Option<(usize, Pixmap)>,
+}
+
+impl crate::fill::Rows for LayerLook<'_> {
+    fn size(&self) -> (u32, u32) {
+        (self.pixels.width(), self.pixels.height())
+    }
+
+    fn row(&self, y: usize) -> &[[u8; 4]] {
+        match &self.band {
+            Some((y0, band)) if y >= *y0 && y < y0 + band.height() as usize => band.row(y - y0),
+            _ => self.pixels.row(y),
+        }
+    }
+}
+
+/// Cloning is cheap: layers are shared until one of the copies changes them.
+#[derive(Clone, Debug)]
 pub struct Document {
     state: DocState,
     next_id: u64,
     dirty: DirtyRect,
     structure_version: u64,
+    /// Layers whose content changed since [`Self::take_touched`] (structural changes bump
+    /// `structure_version` instead).
+    touched: Vec<LayerId>,
 }
 
 impl Document {
@@ -119,6 +155,7 @@ impl Document {
             next_id: 2,
             dirty: DirtyRect::default(),
             structure_version: 0,
+            touched: Vec::new(),
         };
         doc.invalidate_all();
         doc
@@ -131,6 +168,7 @@ impl Document {
             next_id: 1,
             dirty: DirtyRect::default(),
             structure_version: 0,
+            touched: Vec::new(),
         };
         for (name, pixels, visible) in layers {
             let id = doc.alloc_id();
@@ -194,6 +232,17 @@ impl Document {
         self.dirty.take()
     }
 
+    /// The layers whose content changed since the last call.
+    pub fn take_touched(&mut self) -> Vec<LayerId> {
+        std::mem::take(&mut self.touched)
+    }
+
+    fn touch(&mut self, layer: LayerId) {
+        if !self.touched.contains(&layer) {
+            self.touched.push(layer);
+        }
+    }
+
     pub fn invalidate(&mut self, r: PixelRect) {
         self.dirty.add(r.intersect(&self.bounds()));
     }
@@ -211,15 +260,39 @@ impl Document {
 
     /// Edits the active layer. `rect` must cover every pixel `f` modifies; it is saved for undo.
     pub fn edit_active(&mut self, rect: PixelRect, f: impl FnOnce(&mut Pixmap)) -> Option<Change> {
+        self.edit_active_where(rect, |_| true, f)
+    }
+
+    /// Like [`Self::edit_active`], saving for undo only the parts of `rect` for which
+    /// `touched(area)` holds: `f` must leave every other pixel as it was.
+    pub fn edit_active_where(
+        &mut self,
+        rect: PixelRect,
+        touched: impl Fn(PixelRect) -> bool + Sync,
+        f: impl FnOnce(&mut Pixmap),
+    ) -> Option<Change> {
         let rect = rect.intersect(&self.bounds());
         if rect.is_empty() {
             return None;
         }
         let layer = self.active_layer().id;
-        let before = raster::copy_region(&self.active_layer().pixels, rect)?;
+        let mut patch = Patch::capture_where(&self.active_layer().pixels, rect, touched);
+        // Undo now relies on the patch covering every change (history snapshots reuse the live
+        // pixels): check it on small canvases in debug builds.
+        #[cfg(debug_assertions)]
+        let check = (self.bounds().area() <= 1 << 22).then(|| (*self.active_layer().pixels).clone());
         f(self.active_pixels_mut());
         self.invalidate(rect);
-        Some(Change::Pixels { layer, x: rect.x0, y: rect.y0, pixels: before })
+        self.touch(layer);
+        patch.keep_changed(&self.active_layer().pixels);
+        #[cfg(debug_assertions)]
+        if let Some(before) = check {
+            let mut undone = (*self.active_layer().pixels).clone();
+            assert!(patch.swap(&mut undone));
+            assert!(undone.data() == before.data(), "an edit changed pixels outside the area it declared");
+            assert!(patch.swap(&mut undone));
+        }
+        (!patch.is_empty()).then_some(Change::Pixels { layer, patch })
     }
 
     /// A cheap snapshot of the whole document, for structural undo.
@@ -236,18 +309,56 @@ impl Document {
     }
 
     /// Swaps a stored region with the layer content (undo/redo of a pixel change).
-    pub(crate) fn swap_pixels(&mut self, layer: LayerId, x: i32, y: i32, pixels: &mut Pixmap) -> bool {
+    pub(crate) fn swap_pixels(&mut self, layer: LayerId, patch: &mut Patch) -> bool {
         let Some(l) = self.state.layers.iter_mut().find(|l| l.id == layer) else {
             return false;
         };
-        let target = Arc::make_mut(&mut l.pixels);
-        let fits = PixelRect::from_xywh(x, y, pixels.width(), pixels.height());
-        if fits.intersect(&raster::bounds(target)) != fits {
+        if !patch.swap(Arc::make_mut(&mut l.pixels)) {
             return false;
         }
-        raster::swap_region(target, pixels, x, y);
-        self.invalidate(fits);
+        self.invalidate(patch.bounds());
+        self.touch(layer);
         true
+    }
+
+    /// Swaps the vector objects of `layer` with `objects` (undo/redo of an object change).
+    pub(crate) fn swap_objects(&mut self, layer: LayerId, objects: &mut Vec<VectorShape>) {
+        let Some(i) = self.state.layers.iter().position(|l| l.id == layer) else {
+            return;
+        };
+        let area = |o: &[VectorShape]| o.iter().fold(PixelRect::EMPTY, |r, s| r.union(&s.bounds()));
+        let mut dirty = area(objects);
+        std::mem::swap(&mut self.state.layers[i].objects, objects);
+        dirty = dirty.union(&area(objects));
+        self.invalidate(dirty);
+        self.touch(layer);
+    }
+
+    /// Drops from `state` the pixels it shares with the live layer of the same id, returning
+    /// which layers were dropped (see [`crate::history::Snapshot`]).
+    pub(crate) fn detach_live(&self, state: &mut DocState) -> Vec<bool> {
+        state
+            .layers
+            .iter_mut()
+            .map(|l| {
+                let live = self.state.layers.iter().any(|d| d.id == l.id && Arc::ptr_eq(&d.pixels, &l.pixels));
+                if live {
+                    l.pixels = placeholder();
+                }
+                live
+            })
+            .collect()
+    }
+
+    /// Gives back to `state` the pixels [`Self::detach_live`] dropped, from the live layers.
+    pub(crate) fn attach_live(&self, state: &mut DocState, live: &[bool]) {
+        let (w, h) = (state.width, state.height);
+        for (l, _) in state.layers.iter_mut().zip(live).filter(|(_, live)| **live) {
+            l.pixels = match self.state.layers.iter().find(|d| d.id == l.id) {
+                Some(d) => d.pixels.clone(),
+                None => Arc::new(raster::pixmap(w, h)),
+            };
+        }
     }
 
     // ----- Structural operations (callers snapshot first for undo) -----
@@ -301,6 +412,45 @@ impl Document {
                 })
                 .collect();
         }
+    }
+
+    /// Like [`Document::map_layers`] for an `f` that maps the content by the affine transform
+    /// `t` (a resize, skew, rotation or flip): vector objects are mapped the same way and stay
+    /// editable.
+    pub fn map_layers_affine(&mut self, t: tiny_skia::Transform, f: impl FnMut(&Pixmap) -> Pixmap) {
+        let objects: Vec<Vec<VectorShape>> = self.state.layers.iter_mut().map(|l| std::mem::take(&mut l.objects)).collect();
+        self.map_layers(f);
+        let canvas = (self.width(), self.height());
+        for (layer, mut objects) in self.state.layers.iter_mut().zip(objects) {
+            for o in &mut objects {
+                o.transform(t, canvas);
+            }
+            layer.objects = objects;
+        }
+    }
+
+    /// Flips or turns the whole image, layers and vector objects alike. Returns the objects as
+    /// they were, per layer, for undo (see [`Change::reorient`]).
+    pub fn reorient(&mut self, op: raster::Reorient) -> Vec<(LayerId, Vec<VectorShape>)> {
+        let t = op.transform(self.width(), self.height());
+        let (w, h) = op.size(self.width(), self.height());
+        let before = self.state.layers.iter().map(|l| (l.id, l.objects.clone())).collect();
+        self.reorient_pixels(op);
+        for l in &mut self.state.layers {
+            for o in &mut l.objects {
+                o.transform(t, (w, h));
+            }
+        }
+        before
+    }
+
+    /// Reorients the pixels of every layer and the canvas size, leaving the objects alone.
+    pub(crate) fn reorient_pixels(&mut self, op: raster::Reorient) {
+        for l in &mut self.state.layers {
+            op.apply(Arc::make_mut(&mut l.pixels));
+        }
+        (self.state.width, self.state.height) = op.size(self.state.width, self.state.height);
+        self.invalidate_all();
     }
 
     pub fn set_active(&mut self, index: usize) {
@@ -420,40 +570,50 @@ impl Document {
     // ----- Rendering -----
 
     /// Composites the visible layers covering `rect` into `out` (which has the size of `rect`).
+    /// Bands of rows are composited in parallel.
     pub fn composite_into(&self, out: &mut Pixmap, rect: PixelRect, with_background: bool, preview: Option<&dyn ActivePreview>) {
         debug_assert_eq!((out.width(), out.height()), (rect.width(), rect.height()));
         let bg = self.state.background;
-        if with_background && bg.visible {
-            out.fill(bg.color.to_skia());
-        } else {
-            out.fill(tiny_skia::Color::TRANSPARENT);
-        }
+        let bg = if with_background && bg.visible { bg.color.premultiplied() } else { [0; 4] };
         let preview = preview.filter(|p| !p.bounds().intersect(&rect).is_empty());
+        let w = out.width() as usize;
+        let (d, _) = out.data_mut().as_chunks_mut::<4>();
+        blend::par_bands(d, w, blend::band_rows(w), |r0, band| {
+            let y0 = rect.y0 + r0 as i32;
+            let area = PixelRect::new(rect.x0, y0, rect.x1, y0 + (band.len() / w) as i32);
+            self.composite_band(band, w, area, bg, preview);
+        });
+    }
+
+    /// Composites canvas `area` into `band` (`width` pixels per row) over `bg`.
+    fn composite_band(&self, band: &mut [blend::Px], width: usize, area: PixelRect, bg: blend::Px, preview: Option<&dyn ActivePreview>) {
+        band.fill(bg);
+        let preview = preview.filter(|p| !p.bounds().intersect(&area).is_empty());
         for (i, layer) in self.state.layers.iter().enumerate() {
             if !layer.visible {
                 continue;
             }
-            let objects = layer.objects.iter().filter(|o| !o.bounds().intersect(&rect).is_empty());
+            let objects = layer.objects.iter().filter(|o| !o.bounds().intersect(&area).is_empty());
             match preview {
                 Some(p) if i == self.state.active => {
-                    if let Some(mut region) = raster::copy_region(&layer.pixels, rect) {
+                    if let Some(mut region) = raster::copy_region(&layer.pixels, area) {
                         let above = p.above_objects();
                         if !above {
-                            p.apply(&mut region, rect);
+                            p.apply(&mut region, area);
                         }
                         for o in objects {
-                            o.draw_into(&mut region, (rect.x0, rect.y0));
+                            o.draw_into(&mut region, (area.x0, area.y0));
                         }
                         if above {
-                            p.apply(&mut region, rect);
+                            p.apply(&mut region, area);
                         }
-                        raster::draw_over(out, &region, 0, 0, 1.0);
+                        blend::over_into(band, width, 0, &region, 0, 0, 255);
                     }
                 }
                 _ => {
-                    raster::draw_over(out, &layer.pixels, -rect.x0, -rect.y0, 1.0);
+                    blend::over_into(band, width, 0, &layer.pixels, -area.x0, -area.y0, 255);
                     for o in objects {
-                        o.draw_into(out, (rect.x0, rect.y0));
+                        o.over_band(band, width, area);
                     }
                 }
             }
@@ -509,6 +669,7 @@ impl Document {
     pub fn add_object(&mut self, shape: VectorShape) {
         self.invalidate(shape.bounds());
         let i = self.state.active;
+        self.touch(self.state.layers[i].id);
         self.state.layers[i].objects.push(shape);
     }
 
@@ -517,6 +678,7 @@ impl Document {
     pub fn insert_object(&mut self, layer: LayerId, index: usize, shape: VectorShape) {
         self.invalidate(shape.bounds());
         let i = self.state.layers.iter().position(|l| l.id == layer).unwrap_or(self.state.active);
+        self.touch(self.state.layers[i].id);
         let objects = &mut self.state.layers[i].objects;
         objects.insert(index.min(objects.len()), shape);
     }
@@ -529,6 +691,7 @@ impl Document {
         }
         let shape = objects.remove(index);
         self.invalidate(shape.bounds());
+        self.touch(self.state.layers[layer].id);
         Some(shape)
     }
 
@@ -548,6 +711,22 @@ impl Document {
     }
 
     /// Layer `index` as it looks: its pixels with its vector objects drawn on top.
+    /// Layer `index` as it looks (with its vector objects), for reading row by row: only the
+    /// rows the objects cross are copied.
+    pub fn layer_look(&self, index: usize) -> LayerLook<'_> {
+        let layer = &self.state.layers[index];
+        let bounds = layer.objects.iter().fold(PixelRect::EMPTY, |b, o| b.union(&o.bounds())).intersect(&self.bounds());
+        let band = (!bounds.is_empty()).then(|| {
+            let rows = PixelRect::new(0, bounds.y0, self.width() as i32, bounds.y1);
+            let mut band = raster::copy_region(&layer.pixels, rows).expect("rows inside the canvas");
+            for o in &layer.objects {
+                o.draw_into(&mut band, (0, rows.y0));
+            }
+            (rows.y0 as usize, band)
+        });
+        LayerLook { pixels: &layer.pixels, band }
+    }
+
     pub fn layer_image(&self, index: usize) -> Cow<'_, Pixmap> {
         let layer = &self.state.layers[index];
         if layer.objects.is_empty() {
@@ -629,6 +808,31 @@ mod tests {
         assert_eq!(doc.active_layer().name, "4");
         assert!(!doc.move_layer_to(1, 1));
         assert!(!doc.move_layer_to(0, 4));
+    }
+
+    #[test]
+    fn layer_look_reads_like_layer_image() {
+        use crate::fill::Rows;
+        let mut doc = Document::new(20, 10).unwrap();
+        doc.edit_active(PixelRect::new(0, 0, 20, 10), |p| raster::fill_region(p, PixelRect::new(0, 7, 20, 10), Color::BLACK));
+        doc.add_object(red_square(3.0));
+        let (look, image) = (doc.layer_look(0), doc.layer_image(0));
+        for y in 0..10 {
+            assert_eq!(look.row(y), image.row(y), "row {y}");
+        }
+    }
+
+    #[test]
+    fn affine_maps_keep_objects_editable() {
+        let mut doc = Document::new(20, 10).unwrap();
+        doc.add_object(red_square(3.0));
+        doc.map_layers_affine(tiny_skia::Transform::from_scale(2.0, 2.0), |p| raster::resize(p, 40, 20));
+        assert_eq!((doc.width(), doc.height()), (40, 20));
+        let o = &doc.layers()[0].objects[0];
+        let crate::vector::ShapeGeom::Box { rect, .. } = &o.geom else { panic!() };
+        assert_eq!(*rect, crate::geom::RectF::from_xywh(6.0, 4.0, 8.0, 8.0));
+        assert!(o.raster().is_some());
+        assert!(raster::is_fully_transparent(&doc.layers()[0].pixels), "the object was not drawn into the pixels");
     }
 
     fn red_square(x: f32) -> VectorShape {

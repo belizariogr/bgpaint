@@ -486,6 +486,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "pollster",
+ "rayon",
  "resvg",
  "rfd",
  "serde",
@@ -499,7 +500,10 @@ name = "bgpaint-core"
 version = "1.0.5"
 dependencies = [
  "cosmic-text",
+ "crc32fast",
+ "flate2",
  "image",
+ "rayon",
  "resvg",
  "roxmltree 0.21.2",
  "tiny-skia",

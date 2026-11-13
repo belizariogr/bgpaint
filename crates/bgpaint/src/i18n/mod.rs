@@ -219,6 +219,10 @@ pub struct Strings {
     pub error_title: &'static str,
     pub open_failed: &'static str,
     pub save_failed: &'static str,
+    /// Shown while a file is being written in the background.
+    pub saving: &'static str,
+    /// Shown while a file is being read in the background.
+    pub opening: &'static str,
     pub close: &'static str,
     pub all_images: &'static str,
     pub paint_project: &'static str,
