@@ -64,10 +64,15 @@ impl PaintApp {
         let StrokeOp { stroke, color, opacity, mode, label } = op;
         let mask = stroke.finish();
         let bounds = mask.bounds();
-        let change = self.doc.edit_active(bounds, |layer| {
-            let full = PixelRect::from_size(layer.width(), layer.height());
-            apply_mask(layer, full, &mask, color, opacity, mode);
-        });
+        // Only the tiles the stroke covers are saved for undo.
+        let change = self.doc.edit_active_where(
+            bounds,
+            |r| mask.any_in(r),
+            |layer| {
+                let full = PixelRect::from_size(layer.width(), layer.height());
+                apply_mask(layer, full, &mask, color, opacity, mode);
+            },
+        );
         self.preview_dirty.add(bounds);
         self.history.push_one(label, change);
     }
@@ -82,8 +87,9 @@ impl PaintApp {
         }
         // The area is found on the layer as it looks (vector outlines bound it too); the color goes
         // into its pixels, under the objects.
-        let Some(flood) = Flood::at(&self.doc.layer_image(self.doc.active_index()), x, y, 0) else { return };
-        let change = self.doc.edit_active(flood.bounds(), |layer| flood.paint(layer, color));
+        let Some(flood) = Flood::at(&self.doc.layer_look(self.doc.active_index()), x, y, 0) else { return };
+        // The region and its one pixel fringe: only those tiles are saved for undo.
+        let change = self.doc.edit_active_where(flood.bounds(), |r| flood.mask.any_in(r.expand(1)), |layer| flood.paint(layer, color));
         self.history.push_one("fill", change);
     }
 

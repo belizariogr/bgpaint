@@ -6,8 +6,10 @@ use super::menubar::MenuKind;
 use super::widgets::{self, IconButton};
 use crate::app::PaintApp;
 use crate::commands::Command;
-use bgpaint_core::document::LayerId;
+use bgpaint_core::document::{ActivePreview, Document, LayerId};
+use bgpaint_core::geom::PixelRect;
 use bgpaint_core::raster;
+use bgpaint_core::tiny_skia::{Pixmap, Transform};
 use egui::{Color32, CursorIcon, Id, Rect, Sense, Stroke, TextureHandle, Vec2, pos2, vec2};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -31,41 +33,106 @@ struct LayerDrag {
     grab: Vec2,
 }
 
+/// Largest tool preview (canvas pixels) drawn into its layer's thumbnail while in progress.
+const PREVIEW_MAX_AREA: u64 = 4096 * 4096;
+
 /// Cached layer thumbnails.
 #[derive(Default)]
 pub struct Thumbnails {
     textures: HashMap<LayerId, TextureHandle>,
-    pub stale: bool,
+    /// Layers whose thumbnail is out of date.
+    stale: Vec<LayerId>,
     last: Option<Instant>,
     structure: u64,
     size: (u32, u32),
 }
 
 impl Thumbnails {
-    fn refresh(&mut self, ctx: &egui::Context, app_doc: &bgpaint_core::document::Document) {
+    /// Marks the thumbnail of `layer` out of date.
+    pub fn touch(&mut self, layer: LayerId) {
+        if !self.stale.contains(&layer) {
+            self.stale.push(layer);
+        }
+    }
+
+    /// `preview` is the tool in progress on the active layer (a picked-up object, a floating
+    /// selection, a stroke...), shown in that layer's thumbnail as on the canvas.
+    fn refresh(&mut self, ctx: &egui::Context, app_doc: &Document, preview: Option<&dyn ActivePreview>) {
         let structure_changed = self.structure != app_doc.structure_version() || self.size != (app_doc.width(), app_doc.height());
         let due = self.last.is_none_or(|t| t.elapsed() > Duration::from_millis(300));
-        if !(structure_changed || (self.stale && due)) {
-            if self.stale {
+        let stale = !self.stale.is_empty();
+        if !(structure_changed || (stale && due)) {
+            if stale {
                 ctx.request_repaint_after(Duration::from_millis(320));
             }
             return;
         }
         self.structure = app_doc.structure_version();
         self.size = (app_doc.width(), app_doc.height());
-        self.stale = false;
+        // After a structural change every thumbnail is redone, else only the layers that changed.
+        let only = (!structure_changed).then(|| std::mem::take(&mut self.stale));
+        self.stale.clear();
         self.last = Some(Instant::now());
         let (w, h) = fit(app_doc.width(), app_doc.height());
         let ids: Vec<LayerId> = app_doc.layers().iter().map(|l| l.id).collect();
         self.textures.retain(|id, _| ids.contains(id));
         let (sx, sy) = (w as f32 / app_doc.width() as f32, h as f32 / app_doc.height() as f32);
-        for layer in app_doc.layers() {
+        let draw_scaled = |small: &mut Pixmap, src: &Pixmap, x: i32, y: i32| {
+            let t = Transform::from_row(sx, 0.0, 0.0, sy, x as f32 * sx, y as f32 * sy);
+            raster::draw_transformed(small, src, t, true);
+        };
+        let active = app_doc.active_index();
+        for (i, layer) in app_doc.layers().iter().enumerate() {
+            if only.as_ref().is_some_and(|only| !only.contains(&layer.id)) && self.textures.contains_key(&layer.id) {
+                continue;
+            }
+            let preview =
+                preview.filter(|_| i == active).map(|p| (p, p.bounds().intersect(&app_doc.bounds()))).filter(|(_, b)| !b.is_empty());
             // With its vector objects, as it looks on the canvas: drawn straight at thumbnail
             // size rather than on a full-size copy of the layer.
             let mut small = raster::thumbnail(&layer.pixels, w, h);
+            // A preview drawn into the layer's pixels (below its objects) may also erase them, so
+            // the thumbnail pixels it covers are recomputed from a copy of just that area. (Over a
+            // huge area that copy is too slow to repeat; the thumbnail catches up once the tool is done.)
+            if let Some((p, b)) = preview.filter(|(p, b)| !p.above_objects() && b.area() <= PREVIEW_MAX_AREA) {
+                let tb = PixelRect::new(
+                    (b.x0 as f32 * sx).floor() as i32,
+                    (b.y0 as f32 * sy).floor() as i32,
+                    (b.x1 as f32 * sx).ceil() as i32,
+                    (b.y1 as f32 * sy).ceil() as i32,
+                );
+                let src = PixelRect::new(
+                    (tb.x0 as f32 / sx).floor() as i32,
+                    (tb.y0 as f32 / sy).floor() as i32,
+                    (tb.x1 as f32 / sx).ceil() as i32,
+                    (tb.y1 as f32 / sy).ceil() as i32,
+                )
+                .intersect(&app_doc.bounds());
+                if let Some(mut region) = raster::copy_region(&layer.pixels, src) {
+                    p.apply(&mut region, src);
+                    raster::thumbnail_into(&mut small, &region, (src.x0, src.y0), (app_doc.width(), app_doc.height()), tb);
+                }
+            }
             for r in layer.objects.iter().filter_map(|o| o.raster()) {
-                let t = bgpaint_core::tiny_skia::Transform::from_row(sx, 0.0, 0.0, sy, r.x as f32 * sx, r.y as f32 * sy);
-                raster::draw_transformed(&mut small, &r.pixmap, t, true);
+                for (x, y, tile) in r.tiles() {
+                    draw_scaled(&mut small, tile, x, y);
+                }
+            }
+            if let Some((p, b)) = preview.filter(|(p, _)| p.above_objects()) {
+                match p.rendered() {
+                    // Scaled straight from the shape's tiles: the cost follows the thumbnail.
+                    Some(r) => {
+                        for (x, y, tile) in r.tiles() {
+                            draw_scaled(&mut small, tile, x, y);
+                        }
+                    }
+                    None if b.area() <= PREVIEW_MAX_AREA => {
+                        let mut region = raster::pixmap(b.width(), b.height());
+                        p.apply(&mut region, b);
+                        draw_scaled(&mut small, &region, b.x0, b.y0);
+                    }
+                    None => {}
+                }
             }
             let img = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], small.data());
             match self.textures.get_mut(&layer.id) {
@@ -88,7 +155,7 @@ impl PaintApp {
     pub fn layers_panel(&mut self, ui: &mut egui::Ui) {
         let t = self.theme.clone();
         let ctx = ui.ctx().clone();
-        self.thumbs.refresh(&ctx, &self.doc);
+        self.thumbs.refresh(&ctx, &self.doc, self.active.preview());
         egui::Panel::right("layers")
             .exact_size(PANEL_WIDTH)
             .resizable(false)

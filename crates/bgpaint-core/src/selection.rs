@@ -71,12 +71,23 @@ impl SelectionMask {
         let full = PixelRect::from_size(canvas_w, canvas_h);
         let mut data = vec![255u8; full.area() as usize];
         let r = self.rect.intersect(&full);
+        let w = canvas_w as usize;
+        let (mw, cols) = (self.rect.width() as usize, (r.x0 as usize)..(r.x1 as usize));
         for y in r.y0..r.y1 {
-            for x in r.x0..r.x1 {
-                data[(y as u32 * canvas_w + x as u32) as usize] = 255 - self.get(x, y);
+            let row = &mut data[y as usize * w..(y as usize + 1) * w][cols.clone()];
+            match &self.data {
+                None => row.fill(0),
+                Some(d) => {
+                    let o = (y - self.rect.y0) as usize * mw + (r.x0 - self.rect.x0) as usize;
+                    let n = row.len();
+                    for (out, m) in row.iter_mut().zip(&d[o..o + n]) {
+                        *out = 255 - m;
+                    }
+                }
             }
         }
-        if data.iter().all(|&v| v == 0) {
+        // Empty only when the selection covered the whole canvas.
+        if r == full && data.iter().all(|&v| v == 0) {
             return None;
         }
         Some(Self { rect: full, data: Some(data) })

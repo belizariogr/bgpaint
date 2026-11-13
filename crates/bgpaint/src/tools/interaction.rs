@@ -180,7 +180,7 @@ impl PaintApp {
                 if r != self.doc.bounds() {
                     let before = self.doc.snapshot();
                     self.doc.resize_canvas(r.width(), r.height(), -r.x0, -r.y0);
-                    self.history.push("resize canvas", vec![Change::document(before)]);
+                    self.history.push("resize canvas", vec![Change::document(before, &self.doc)]);
                 }
             }
             Active::Pan { button: b, .. } if b == button => {}

@@ -2,6 +2,7 @@
 //! shapes, text and file formats. It has no UI dependencies and is fully unit tested.
 #![forbid(unsafe_code)]
 
+pub mod blend;
 pub mod brush;
 pub mod color;
 pub mod document;
@@ -11,6 +12,8 @@ pub mod history;
 pub mod io;
 pub mod noise;
 pub mod ora;
+pub mod patch;
+pub mod png;
 pub mod raster;
 pub mod selection;
 pub mod shapes;

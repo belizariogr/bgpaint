@@ -11,7 +11,7 @@ use crate::tools::interaction::{Active, Handle};
 use crate::tools::{MAX_FONT_SIZE, MAX_SIZE, Tool};
 use crate::ui::icons::regular as ic;
 use crate::ui::widgets;
-use bgpaint_core::geom::Point;
+use bgpaint_core::geom::{PixelRect, Point};
 use cursors::ToolCursor;
 use egui::{Align2, Color32, CursorIcon, Id, Rect, Sense, Stroke, Vec2, pos2, vec2};
 
@@ -46,14 +46,17 @@ impl PaintApp {
 
             // Upload changed pixels.
             let mut dirty = self.doc.take_dirty();
-            if dirty.is_some() {
-                self.thumbs.stale = true;
+            for layer in self.doc.take_touched() {
+                self.thumbs.touch(layer);
             }
             if let Some(d) = self.preview_dirty.take() {
+                // The thumbnail of the active layer shows the tool in progress too.
+                self.thumbs.touch(self.doc.active_layer().id);
                 dirty = Some(dirty.map_or(d, |x| x.union(&d)));
             }
-            let smooth = self.view.zoom < 0.999;
-            self.tiles.update(&ctx, &self.doc, self.active.preview(), dirty, smooth);
+            let (a, b) = self.view.visible_canvas();
+            let visible = PixelRect::enclosing(a.x, a.y, b.x, b.y);
+            self.tiles.update(&ctx, &self.doc, self.active.preview(), dirty, visible, self.view.zoom);
 
             let painter = ui.painter_at(viewport);
             let canvas = self.view.canvas_rect();
@@ -447,7 +450,7 @@ impl PaintApp {
                     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
                     self.paint_transparency(ctx, ui.painter(), rect, t);
                     let ppp = ctx.pixels_per_point();
-                    self.tiles.paint(&ui.painter_at(rect), rect.min, s, ppp);
+                    self.tiles.paint_overview(&ui.painter_at(rect), rect.min, s, ppp);
                     // Visible area.
                     let (a, b) = self.view.visible_canvas();
                     let vis = Rect::from_min_max(rect.min + vec2(a.x, a.y) * s, rect.min + vec2(b.x, b.y) * s).intersect(rect);

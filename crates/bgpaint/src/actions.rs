@@ -221,7 +221,7 @@ impl PaintApp {
         self.commit_interaction();
         let before = self.doc.snapshot();
         if f(&mut self.doc) {
-            self.history.push(label, vec![Change::document(before)]);
+            self.history.push(label, vec![Change::document(before, &self.doc)]);
         }
     }
 
@@ -273,30 +273,46 @@ impl PaintApp {
     }
 
     /// Applies a whole-image transform to every layer (or the selection, when there is one).
-    fn transform_image(&mut self, label: &'static str, f: impl Fn(&bgpaint_core::tiny_skia::Pixmap) -> bgpaint_core::tiny_skia::Pixmap) {
+    /// `t` gives the affine map `f` applies to a `w`×`h` image, which vector objects follow.
+    pub fn transform_image(
+        &mut self,
+        label: &'static str,
+        t: impl FnOnce(u32, u32) -> bgpaint_core::tiny_skia::Transform,
+        f: impl Fn(&bgpaint_core::tiny_skia::Pixmap) -> bgpaint_core::tiny_skia::Pixmap,
+    ) {
         if self.transform_selection(&f) {
             return;
         }
         self.commit_interaction();
         let before = self.doc.snapshot();
-        self.doc.map_layers(&f);
-        self.history.push(label, vec![Change::document(before)]);
+        let t = t(self.doc.width(), self.doc.height());
+        self.doc.map_layers_affine(t, &f);
+        self.history.push(label, vec![Change::document(before, &self.doc)]);
     }
 
     pub fn rotate(&mut self, turn: QuarterTurn) {
-        self.transform_image("rotate", |p| raster::rotate_quarter(p, turn));
+        self.reorient("rotate", raster::Reorient::Rotate(turn));
     }
 
     pub fn flip(&mut self, horizontal: bool) {
-        self.transform_image("flip", |p| {
+        let op = if horizontal { raster::Reorient::FlipHorizontal } else { raster::Reorient::FlipVertical };
+        self.reorient("flip", op);
+    }
+
+    /// Flips or turns the selection, or else the whole image (undone by the inverse operation,
+    /// with no copy of the pixels).
+    fn reorient(&mut self, label: &'static str, op: raster::Reorient) {
+        let f = |p: &bgpaint_core::tiny_skia::Pixmap| {
             let mut out = p.clone();
-            if horizontal {
-                raster::flip_horizontal(&mut out);
-            } else {
-                raster::flip_vertical(&mut out);
-            }
+            op.apply(&mut out);
             out
-        });
+        };
+        if self.transform_selection(&f) {
+            return;
+        }
+        self.commit_interaction();
+        let objects = self.doc.reorient(op);
+        self.history.push(label, vec![Change::reorient(op, objects)]);
     }
 
     pub fn invert_colors(&mut self) {

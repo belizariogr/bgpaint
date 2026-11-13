@@ -206,6 +206,8 @@ pub static STRINGS: Strings = Strings {
     error_title: "Something went wrong",
     open_failed: "This file could not be opened.",
     save_failed: "The image could not be saved.",
+    saving: "Saving…",
+    opening: "Opening…",
     close: "Close",
     all_images: "All images",
     paint_project: "Paint project",

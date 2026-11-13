@@ -49,6 +49,31 @@ pub enum DialogResult {
     Toast(String),
     /// BGPaint was launched again with these files (see [`crate::single_instance`]).
     Launched(Vec<PathBuf>),
+    /// A save started by [`PaintApp::save_to`] finished.
+    Saved(Box<SaveDone>),
+    /// A file started by [`PaintApp::open_path`] was read: (absolute path, path as given,
+    /// document and size on disk or the error).
+    Opened(PathBuf, PathBuf, Result<(io::Opened, Option<u64>), String>),
+}
+
+/// A document copy being written by the save thread.
+struct SaveJob {
+    tab: u64,
+    doc: Document,
+    path: PathBuf,
+    format: SaveFormat,
+    /// History state of the copy.
+    state: u64,
+    then: Option<Pending>,
+}
+
+pub struct SaveDone {
+    tab: u64,
+    path: PathBuf,
+    format: SaveFormat,
+    state: u64,
+    then: Option<Pending>,
+    result: Result<u64, String>,
 }
 
 pub struct Async {
@@ -59,6 +84,14 @@ pub struct Async {
     /// Files to open or import, held back while a dialog is shown so they do not change the
     /// document under it.
     queue: std::collections::VecDeque<Queued>,
+    /// The thread that writes files, one after another in the order they were saved.
+    saver: Option<Sender<SaveJob>>,
+    /// Saves not finished yet.
+    pub saving: usize,
+    /// Files being read.
+    pub opening: std::collections::HashSet<PathBuf>,
+    /// The window waits for the saves to finish before closing.
+    exit_after_saves: bool,
 }
 
 enum Queued {
@@ -72,12 +105,48 @@ impl Async {
     pub fn sender(&self) -> Sender<DialogResult> {
         self.tx.clone()
     }
+
+    /// The save thread, started on first use.
+    fn saver(&mut self, ctx: &egui::Context) -> &Sender<SaveJob> {
+        self.saver.get_or_insert_with(|| {
+            let (jobs, rx) = channel::<SaveJob>();
+            let tx = self.tx.clone();
+            let ctx = ctx.clone();
+            std::thread::Builder::new()
+                .name("save".into())
+                .spawn(move || {
+                    for job in rx {
+                        let result = io::save(&job.doc, &job.path, job.format).map_err(|e| e.to_string());
+                        drop(job.doc);
+                        let done = SaveDone { tab: job.tab, path: job.path, format: job.format, state: job.state, then: job.then, result };
+                        let _ = tx.send(DialogResult::Saved(Box::new(done)));
+                        ctx.request_repaint();
+                    }
+                })
+                .expect("spawning the save thread");
+            jobs
+        })
+    }
+
+    /// Asks the window to close once the saves in progress are done.
+    pub fn exit_after_saves(&mut self) {
+        self.exit_after_saves = true;
+    }
 }
 
 impl Default for Async {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Self { tx, rx, busy: Default::default(), queue: Default::default() }
+        Self {
+            tx,
+            rx,
+            busy: Default::default(),
+            queue: Default::default(),
+            saver: None,
+            saving: 0,
+            opening: Default::default(),
+            exit_after_saves: false,
+        }
     }
 }
 
@@ -130,6 +199,8 @@ impl PaintApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 DialogResult::SaveAs(tab, p, f, then) => self.files.queue.push_back(Queued::SaveAs(tab, p, f, then)),
+                DialogResult::Saved(done) => self.finish_save(*done),
+                DialogResult::Opened(path, original, result) => self.finish_open(path, original, result),
             }
         }
         while self.ui.modal.is_none()
@@ -149,11 +220,7 @@ impl PaintApp {
                     // that asked (and drop the result if it was closed meanwhile).
                     let Some(i) = self.tab_index(tab) else { continue };
                     self.switch_tab(i);
-                    if self.save_to(&p, f)
-                        && let Some(then) = then
-                    {
-                        self.run_pending(then);
-                    }
+                    self.save_to(ctx, &p, f, then);
                 }
             }
         }
@@ -190,9 +257,7 @@ impl PaintApp {
             match (&self.file.path, self.file.format) {
                 (Some(p), Some(f)) if folder_exists(p) => {
                     let p = p.clone();
-                    if self.save_to(&p, f) {
-                        self.run_pending(action);
-                    }
+                    self.save_to(ctx, &p, f, Some(action));
                 }
                 (_, f) => self.save_as_dialog(ctx, Some(f.unwrap_or(SaveFormat::Png)), Some(action)),
             }
@@ -285,44 +350,91 @@ impl PaintApp {
         match (&self.file.path, self.file.format) {
             (Some(p), Some(f)) => {
                 let p = p.clone();
-                self.save_to(&p, f);
+                self.save_to(ctx, &p, f, None);
             }
             _ => self.save_as_dialog(ctx, Some(SaveFormat::Png), None),
         }
     }
 
-    /// Writes the document; returns false (and shows an error) on failure.
-    pub fn save_to(&mut self, path: &Path, format: SaveFormat) -> bool {
-        match io::save(&self.doc, path, format) {
+    /// Writes the document on the save thread (the window stays responsive), then runs `then`.
+    /// A copy is saved: the document can be edited meanwhile. Errors show when it finishes.
+    pub fn save_to(&mut self, ctx: &egui::Context, path: &Path, format: SaveFormat, then: Option<Pending>) {
+        let job =
+            SaveJob { tab: self.tab_id, doc: self.doc.clone(), path: path.to_path_buf(), format, state: self.history.state_id(), then };
+        self.files.saving += 1;
+        // The thread only stops with the app, so the send cannot fail.
+        let _ = self.files.saver(ctx).send(job);
+    }
+
+    /// A save finished: the tab it came from is marked saved (as of the copy written).
+    fn finish_save(&mut self, done: SaveDone) {
+        self.files.saving -= 1;
+        match done.result {
             Ok(size) => {
-                let path = &absolute(path);
-                self.detach_other_tabs_from(path);
-                self.file.saved_state = self.history.state_id();
-                self.file.disk_size = Some(size);
-                // Saving as a project keeps the image path for plain saves only if it is a project.
-                self.file.path = Some(path.to_path_buf());
-                self.file.format = Some(format);
+                let path = absolute(&done.path);
+                self.detach_other_tabs_from(&path);
+                if let Some(file) = self.tab_file_mut(done.tab) {
+                    file.saved_state = done.state;
+                    file.disk_size = Some(size);
+                    file.path = Some(path.clone());
+                    file.format = Some(done.format);
+                }
                 self.settings.last_dir = path.parent().map(Path::to_path_buf);
-                self.settings.add_recent(path.to_path_buf());
+                self.settings.add_recent(path);
                 self.settings.save();
-                true
+                if let Some(then) = done.then
+                    && let Some(i) = self.tab_index(done.tab)
+                {
+                    self.switch_tab(i);
+                    // Changes made while it was being written are not in the file: ask again.
+                    if self.history.state_id() == done.state {
+                        self.run_pending(then);
+                    } else {
+                        self.confirm_unsaved(then);
+                    }
+                }
             }
             Err(e) => {
+                self.files.exit_after_saves = false;
                 self.ui.modal = Some(Modal::Error(format!("{}\n{e}", self.tr.save_failed)));
-                false
             }
+        }
+        if self.files.saving == 0 && std::mem::take(&mut self.files.exit_after_saves) {
+            self.request_exit();
         }
     }
 
-    /// Opens a file in its own tab (or switches to it when it is already open).
-    pub fn open_path(&mut self, _ctx: &egui::Context, original: PathBuf) {
+    /// The file state of tab `tab`, wherever it is.
+    fn tab_file_mut(&mut self, tab: u64) -> Option<&mut FileState> {
+        if tab == self.tab_id {
+            return Some(&mut self.file);
+        }
+        self.tabs.iter_mut().find(|t| t.id == tab).map(|t| &mut t.file)
+    }
+
+    /// Opens a file in its own tab (or switches to it when it is already open). It is read on a
+    /// worker thread.
+    pub fn open_path(&mut self, ctx: &egui::Context, original: PathBuf) {
         let path = absolute(&original);
-        if self.focus_open_path(&path) {
+        if self.focus_open_path(&path) || !self.files.opening.insert(path.clone()) {
             return;
         }
-        match io::open(&path) {
-            Ok(opened) => {
-                let size = std::fs::metadata(&path).ok().map(|m| m.len());
+        let tx = self.files.tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = io::open(&path).map(|opened| (opened, std::fs::metadata(&path).ok().map(|m| m.len()))).map_err(|e| e.to_string());
+            let _ = tx.send(DialogResult::Opened(path, original, result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn finish_open(&mut self, path: PathBuf, original: PathBuf, result: Result<(io::Opened, Option<u64>), String>) {
+        self.files.opening.remove(&path);
+        match result {
+            Ok((opened, size)) => {
+                if self.focus_open_path(&path) {
+                    return;
+                }
                 let file = FileState { path: Some(path.clone()), format: opened.save_format, saved_state: 0, disk_size: size };
                 self.show_document(opened.document, file);
                 self.settings.last_dir = path.parent().map(Path::to_path_buf);

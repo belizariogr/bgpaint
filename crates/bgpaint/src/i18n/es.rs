@@ -206,6 +206,8 @@ pub static STRINGS: Strings = Strings {
     error_title: "Algo salió mal",
     open_failed: "No se pudo abrir este archivo.",
     save_failed: "No se pudo guardar la imagen.",
+    saving: "Guardando…",
+    opening: "Abriendo…",
     close: "Cerrar",
     all_images: "Todas las imágenes",
     paint_project: "Proyecto de Paint",

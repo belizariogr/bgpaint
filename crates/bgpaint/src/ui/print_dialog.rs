@@ -97,7 +97,7 @@ impl PaintApp {
                 let img =
                     if s.center { Rect::from_center_size(printable.center(), size) } else { Rect::from_min_size(printable.min, size) };
                 let painter = ui.painter_at(printable);
-                self.tiles.paint(&painter, img.min, scale, ctx.pixels_per_point());
+                self.tiles.paint_overview(&painter, img.min, scale, ctx.pixels_per_point());
                 ui.add_space(20.0);
                 ui.vertical(|ui| {
                     ui.set_width(330.0);

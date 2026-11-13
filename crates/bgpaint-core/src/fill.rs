@@ -5,6 +5,24 @@ use crate::color::Color;
 use crate::geom::PixelRect;
 use tiny_skia::Pixmap;
 
+/// An image read row by row (a pixmap, or a layer as it looks with its vector objects).
+pub trait Rows {
+    fn size(&self) -> (u32, u32);
+    /// Row `y` of the image, one entry per pixel (premultiplied RGBA).
+    fn row(&self, y: usize) -> &[[u8; 4]];
+}
+
+impl Rows for Pixmap {
+    fn size(&self) -> (u32, u32) {
+        (self.width(), self.height())
+    }
+
+    fn row(&self, y: usize) -> &[[u8; 4]] {
+        let w = self.width() as usize;
+        &self.data().as_chunks::<4>().0[y * w..(y + 1) * w]
+    }
+}
+
 /// A flood filled region: the matched area plus the seed color it grew from.
 pub struct Flood {
     pub mask: StrokeMask,
@@ -13,11 +31,9 @@ pub struct Flood {
 
 impl Flood {
     /// Grows the region around (`x`,`y`); see [`flood_mask`]. `None` outside the image.
-    pub fn at(p: &Pixmap, x: i32, y: i32, tolerance: u8) -> Option<Self> {
-        let i = (y.max(0) as usize * p.width() as usize + x.max(0) as usize) * 4;
+    pub fn at(p: &impl Rows, x: i32, y: i32, tolerance: u8) -> Option<Self> {
         let mask = flood_mask(p, x, y, tolerance)?;
-        let d = p.data();
-        Some(Self { mask, seed: [d[i], d[i + 1], d[i + 2], d[i + 3]] })
+        Some(Self { mask, seed: p.row(y as usize)[x as usize] })
     }
 
     /// Pixels [`Flood::paint`] may change: the region plus its one pixel fringe (corners included).
@@ -47,9 +63,30 @@ impl Flood {
                 [data[i], data[i + 1], data[i + 2], data[i + 3]].map(f32::from)
             };
             let dist2 = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b.iter()).map(|(a, b)| (a - b) * (a - b)).sum::<f32>();
+            let (x0, x1) = (area.x0 as usize, area.x1 as usize);
+            let row = |y: i32| (y >= 0 && y < h).then(|| &self.mask.row(y)[x0.saturating_sub(1)..(x1 + 1).min(w as usize)]);
             for y in area.y0..area.y1 {
+                let cur = self.mask.row(y);
+                // Rows wholly inside the region (most of a big fill) have no fringe.
+                if !cur[x0..x1].contains(&0) {
+                    continue;
+                }
+                let (above, below) = (row(y - 1), row(y + 1));
+                let near_row = |r: Option<&[u8]>, x: usize| {
+                    r.is_some_and(|r| {
+                        let base = x0.saturating_sub(1);
+                        let (a, b) = (x.saturating_sub(1).max(base) - base, (x + 2).min(base + r.len()) - base);
+                        r[a..b].iter().any(|&m| m != 0)
+                    })
+                };
                 for x in area.x0..area.x1 {
-                    if in_mask(x, y) {
+                    let xu = x as usize;
+                    if cur[xu] != 0 {
+                        continue;
+                    }
+                    // Quick reject: no part of the region among the 8 neighbors.
+                    let side = (xu > 0 && cur[xu - 1] != 0) || (xu + 1 < cur.len() && cur[xu + 1] != 0);
+                    if !side && !near_row(above, xu) && !near_row(below, xu) {
                         continue;
                     }
                     let here = px(x, y);
@@ -111,11 +148,13 @@ impl Flood {
         let pm = color.premultiplied();
         let data = p.data_mut();
         let b = self.mask.bounds();
+        let (bx0, bx1) = (b.x0 as usize, b.x1 as usize);
         for y in b.y0..b.y1 {
-            for x in b.x0..b.x1 {
-                if in_mask(x, y) {
-                    let i = (y as usize * w as usize + x as usize) * 4;
-                    data[i..i + 4].copy_from_slice(&pm);
+            let start = y as usize * w as usize;
+            let pixels = data[(start + bx0) * 4..(start + bx1) * 4].as_chunks_mut::<4>().0;
+            for (px, &m) in pixels.iter_mut().zip(&self.mask.row(y)[bx0..bx1]) {
+                if m != 0 {
+                    *px = pm;
                 }
             }
         }
@@ -128,55 +167,51 @@ impl Flood {
 
 /// Computes the contiguous area around (`x`,`y`) whose pixels match the seed pixel within
 /// `tolerance` (max channel difference, premultiplied). Returns `None` outside the image.
-pub fn flood_mask(p: &Pixmap, x: i32, y: i32, tolerance: u8) -> Option<StrokeMask> {
-    let (w, h) = (p.width() as i32, p.height() as i32);
-    if x < 0 || y < 0 || x >= w || y >= h {
+pub fn flood_mask(p: &impl Rows, x: i32, y: i32, tolerance: u8) -> Option<StrokeMask> {
+    let (pw, ph) = p.size();
+    let (w, h) = (pw as usize, ph as usize);
+    if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
         return None;
     }
-    let data = p.data();
-    let px = |x: i32, y: i32| -> [u8; 4] {
-        let i = (y as usize * w as usize + x as usize) * 4;
-        [data[i], data[i + 1], data[i + 2], data[i + 3]]
-    };
-    let seed = px(x, y);
-    let matches = |c: [u8; 4]| c.iter().zip(seed.iter()).all(|(a, b)| a.abs_diff(*b) <= tolerance);
+    let (x, y) = (x as usize, y as usize);
+    let seed = p.row(y)[x];
+    // Whole pixels compare as one word when the tolerance is 0.
+    let matches = |c: &[u8; 4]| *c == seed || (tolerance > 0 && c.iter().zip(seed.iter()).all(|(a, b)| a.abs_diff(*b) <= tolerance));
 
-    let mut mask = StrokeMask::new(p.width(), p.height());
-    let mut visited = vec![false; w as usize * h as usize];
+    // The mask doubles as the set of pixels already visited.
+    let mut mask = StrokeMask::new(pw, ph);
     let mut stack = vec![(x, y)];
-    let mut min = (x, y);
-    let mut max = (x, y);
+    let (mut min, mut max) = ((x, y), (x, y));
     while let Some((sx, sy)) = stack.pop() {
-        if visited[sy as usize * w as usize + sx as usize] {
+        let row = p.row(sy);
+        let done = mask.row(sy as i32);
+        if done[sx] != 0 {
             continue;
         }
         // Expand left and right along the scanline.
         let mut l = sx;
-        while l > 0 && !visited[sy as usize * w as usize + (l - 1) as usize] && matches(px(l - 1, sy)) {
+        while l > 0 && done[l - 1] == 0 && matches(&row[l - 1]) {
             l -= 1;
         }
         let mut r = sx;
-        while r + 1 < w && !visited[sy as usize * w as usize + (r + 1) as usize] && matches(px(r + 1, sy)) {
+        while r + 1 < w && done[r + 1] == 0 && matches(&row[r + 1]) {
             r += 1;
         }
-        let row = mask.row_mut(sy);
-        for cx in l..=r {
-            visited[sy as usize * w as usize + cx as usize] = true;
-            row[cx as usize] = 255;
-        }
+        mask.row_mut(sy as i32)[l..=r].fill(255);
         min = (min.0.min(l), min.1.min(sy));
         max = (max.0.max(r), max.1.max(sy));
-        for ny in [sy - 1, sy + 1] {
-            if ny < 0 || ny >= h {
+        for ny in [sy.wrapping_sub(1), sy + 1] {
+            if ny >= h {
                 continue;
             }
+            let row = p.row(ny);
+            let done = mask.row(ny as i32);
             let mut cx = l;
             while cx <= r {
-                let idx = ny as usize * w as usize + cx as usize;
-                if !visited[idx] && matches(px(cx, ny)) {
+                if done[cx] == 0 && matches(&row[cx]) {
                     stack.push((cx, ny));
                     // Skip the rest of this run; it will be expanded from the pushed seed.
-                    while cx <= r && matches(px(cx, ny)) {
+                    while cx <= r && done[cx] == 0 && matches(&row[cx]) {
                         cx += 1;
                     }
                 } else {
@@ -185,7 +220,7 @@ pub fn flood_mask(p: &Pixmap, x: i32, y: i32, tolerance: u8) -> Option<StrokeMas
             }
         }
     }
-    mask.include(crate::geom::PixelRect::new(min.0, min.1, max.0 + 1, max.1 + 1));
+    mask.include(PixelRect::new(min.0 as i32, min.1 as i32, max.0 as i32 + 1, max.1 as i32 + 1));
     Some(mask)
 }
 

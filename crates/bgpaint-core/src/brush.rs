@@ -4,7 +4,7 @@
 
 use crate::color::{Color, mul_div255};
 use crate::geom::{PixelRect, Point};
-use crate::noise::{Rng, hash2, value_noise};
+use crate::noise::{Rng, hash2, value_noise, value_noise_row};
 use tiny_skia::Pixmap;
 
 /// Freehand drawing tools.
@@ -97,6 +97,30 @@ impl Texture {
     }
 }
 
+impl Texture {
+    /// [`Self::factor`] for `out.len()` pixels of row `y` from `x0` (same values, faster).
+    pub fn factor_row(self, x0: i32, y: i32, out: &mut [f32]) {
+        let n = out.len();
+        match self {
+            Texture::Solid => out.fill(1.0),
+            Texture::Marker => out.fill(0.85),
+            Texture::Crayon => value_noise_row(x0, y, n, 3.0, 5, |i, v| {
+                let grain = hash2(x0 + i as i32, y, 11) * 0.55 + v * 0.45;
+                out[i] = smoothstep(0.32, 0.62, grain);
+            }),
+            Texture::NaturalPencil => value_noise_row(x0, y, n, 2.0, 9, |i, v| {
+                let grain = hash2(x0 + i as i32, y, 23) * 0.6 + v * 0.4;
+                out[i] = 0.25 + 0.65 * smoothstep(0.2, 0.75, grain);
+            }),
+            Texture::Oil => value_noise_row(x0, y, n, 2.5, 13, |i, v| out[i] = 0.55 + 0.45 * v),
+            Texture::Watercolor => {
+                value_noise_row(x0, y, n, 14.0, 17, |i, v| out[i] = 0.32 + 0.3 * v);
+                value_noise_row(x0, y, n, 3.0, 3, |i, v| out[i] += 0.08 * v);
+            }
+        }
+    }
+}
+
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -155,6 +179,17 @@ impl StrokeMask {
         self.bounds = self.bounds.union(&r.clamp_to(self.width, self.height));
     }
 
+    /// Whether any pixel of `r` has coverage.
+    pub fn any_in(&self, r: PixelRect) -> bool {
+        let r = r.intersect(&self.bounds);
+        (r.y0..r.y1).any(|y| self.row(y)[r.x0 as usize..r.x1 as usize].iter().any(|&v| v != 0))
+    }
+
+    pub fn row(&self, y: i32) -> &[u8] {
+        let w = self.width as usize;
+        &self.data[y as usize * w..(y as usize + 1) * w]
+    }
+
     pub fn row_mut(&mut self, y: i32) -> &mut [u8] {
         let w = self.width as usize;
         &mut self.data[y as usize * w..(y as usize + 1) * w]
@@ -175,12 +210,17 @@ impl StrokeMask {
             return;
         }
         let b = self.bounds;
+        let mut factors = vec![0.0; b.width() as usize];
         for y in b.y0..b.y1 {
-            for x in b.x0..b.x1 {
-                let i = y as usize * self.width as usize + x as usize;
-                let v = self.data[i];
-                if v != 0 {
-                    self.data[i] = (f32::from(v) * texture.factor(x, y)).round() as u8;
+            let row = self.row_mut(y);
+            let row = &mut row[b.x0 as usize..b.x1 as usize];
+            if row.iter().all(|&v| v == 0) {
+                continue;
+            }
+            texture.factor_row(b.x0, y, &mut factors);
+            for (v, f) in row.iter_mut().zip(&factors) {
+                if *v != 0 {
+                    *v = (f32::from(*v) * f).round() as u8;
                 }
             }
         }
@@ -214,6 +254,7 @@ pub enum BlendMode {
 }
 
 /// Composites `mask` onto `region` (a pixmap covering `region_rect` in canvas coordinates).
+/// Large areas are done in parallel bands of rows.
 pub fn apply_mask(region: &mut Pixmap, region_rect: PixelRect, mask: &StrokeMask, color: Color, opacity: f32, mode: BlendMode) {
     let area = region_rect.intersect(&mask.bounds());
     if area.is_empty() {
@@ -222,36 +263,42 @@ pub fn apply_mask(region: &mut Pixmap, region_rect: PixelRect, mask: &StrokeMask
     let op = (opacity.clamp(0.0, 1.0) * 255.0).round() as u16;
     let pm = color.premultiplied();
     let rw = region.width() as usize;
-    let data = region.data_mut();
-    for y in area.y0..area.y1 {
-        let ry = (y - region_rect.y0) as usize;
-        for x in area.x0..area.x1 {
-            let m = mask.get(x, y);
-            if m == 0 {
+    let (data, _) = region.data_mut().as_chunks_mut::<4>();
+    let first = (area.y0 - region_rect.y0) as usize;
+    let rows = &mut data[first * rw..(area.y1 - region_rect.y0) as usize * rw];
+    let (x0, x1) = ((area.x0 - region_rect.x0) as usize, (area.x1 - region_rect.x0) as usize);
+    crate::blend::par_bands(rows, rw, crate::blend::band_rows(area.width() as usize), |r0, band| {
+        for (i, row) in band.chunks_exact_mut(rw).enumerate() {
+            let y = area.y0 + (r0 + i) as i32;
+            let m = &mask.row(y)[area.x0 as usize..area.x1 as usize];
+            if m.iter().all(|&v| v == 0) {
                 continue;
             }
-            let k = u16::from(mul_div255(u16::from(m), op));
-            let i = (ry * rw + (x - region_rect.x0) as usize) * 4;
-            let px = &mut data[i..i + 4];
-            match mode {
-                BlendMode::Over => {
-                    let sa = mul_div255(u16::from(pm[3]), k);
-                    let inv = 255 - u16::from(sa);
-                    for c in 0..3 {
-                        let s = mul_div255(u16::from(pm[c]), k);
-                        px[c] = s.saturating_add(mul_div255(u16::from(px[c]), inv));
-                    }
-                    px[3] = sa.saturating_add(mul_div255(u16::from(px[3]), inv));
+            for (px, &m) in row[x0..x1].iter_mut().zip(m) {
+                if m == 0 {
+                    continue;
                 }
-                BlendMode::Erase => {
-                    let keep = 255 - k;
-                    for c in px.iter_mut() {
-                        *c = mul_div255(u16::from(*c), keep);
+                let k = u16::from(mul_div255(u16::from(m), op));
+                match mode {
+                    BlendMode::Over => {
+                        let sa = mul_div255(u16::from(pm[3]), k);
+                        let inv = 255 - u16::from(sa);
+                        for c in 0..3 {
+                            let s = mul_div255(u16::from(pm[c]), k);
+                            px[c] = s.saturating_add(mul_div255(u16::from(px[c]), inv));
+                        }
+                        px[3] = sa.saturating_add(mul_div255(u16::from(px[3]), inv));
+                    }
+                    BlendMode::Erase => {
+                        let keep = 255 - k;
+                        for c in px.iter_mut() {
+                            *c = mul_div255(u16::from(*c), keep);
+                        }
                     }
                 }
             }
         }
-    }
+    });
 }
 
 /// An in-progress freehand stroke.
@@ -490,6 +537,19 @@ fn normalize(x: f32, y: f32) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn texture_rows_match_pixels() {
+        for t in [Texture::Solid, Texture::Crayon, Texture::Marker, Texture::Oil, Texture::NaturalPencil, Texture::Watercolor] {
+            for y in [-3, 0, 77] {
+                let mut row = vec![0.0; 200];
+                t.factor_row(-50, y, &mut row);
+                for (i, f) in row.iter().enumerate() {
+                    assert_eq!(*f, t.factor(-50 + i as i32, y), "{t:?}");
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::raster;
 

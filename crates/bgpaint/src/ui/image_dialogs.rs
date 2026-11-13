@@ -8,6 +8,7 @@ use crate::theme::Theme;
 use bgpaint_core::document::{DEFAULT_HEIGHT, DEFAULT_WIDTH};
 use bgpaint_core::history::Change;
 use bgpaint_core::raster::{self, MAX_AREA, MAX_SIDE};
+use bgpaint_core::tiny_skia::Transform;
 use egui::{Id, RichText, vec2};
 
 pub struct ResizeState {
@@ -153,11 +154,12 @@ impl PaintApp {
                     }
                     out
                 };
-                if !self.transform_selection(&f) && ((w, h) != s.orig || kx != 0.0 || ky != 0.0) {
-                    self.commit_interaction();
-                    let before = self.doc.snapshot();
-                    self.doc.map_layers(f);
-                    self.history.push("resize", vec![Change::document(before)]);
+                if self.selection_content_size().is_some() || (w, h) != s.orig || kx != 0.0 || ky != 0.0 {
+                    let t = move |ow: u32, oh: u32| {
+                        let scale = Transform::from_scale(w as f32 / ow as f32, h as f32 / oh as f32);
+                        if kx != 0.0 || ky != 0.0 { scale.post_concat(raster::skew_degrees_transform(w, h, kx, ky)) } else { scale }
+                    };
+                    self.transform_image("resize", t, f);
                 }
             }
             Footer::None => self.ui.modal = Some(Modal::ResizeSkew(s)),
@@ -221,7 +223,7 @@ impl PaintApp {
                 if (rect.width(), rect.height()) != (self.doc.width(), self.doc.height()) {
                     let before = self.doc.snapshot();
                     self.doc.resize_canvas(rect.width(), rect.height(), 0, 0);
-                    self.history.push("image properties", vec![Change::document(before)]);
+                    self.history.push("image properties", vec![Change::document(before, &self.doc)]);
                 }
             }
             Footer::None => self.ui.modal = Some(Modal::Properties(s)),
@@ -247,12 +249,7 @@ impl PaintApp {
             Footer::Primary if s.angle % 360 != 0 => {
                 let deg = s.angle as f32;
                 let f = move |p: &bgpaint_core::tiny_skia::Pixmap| raster::rotate_degrees(p, deg);
-                if !self.transform_selection(&f) {
-                    self.commit_interaction();
-                    let before = self.doc.snapshot();
-                    self.doc.map_layers(f);
-                    self.history.push("rotate", vec![Change::document(before)]);
-                }
+                self.transform_image("rotate", |w, h| raster::rotate_degrees_transform(w, h, deg), f);
             }
             Footer::None => self.ui.modal = Some(Modal::RotateCustom(s)),
             _ => {}

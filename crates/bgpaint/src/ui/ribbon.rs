@@ -895,7 +895,7 @@ impl PaintApp {
             if let Some(path) = pb.finish()
                 && let Some(s) = shapes::rasterize(&path, &paint, false, w, h)
             {
-                raster::draw_over(&mut p, &s.pixmap, s.x, s.y, 1.0);
+                s.draw_into(&mut p, (0, 0));
             }
             p
         })

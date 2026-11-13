@@ -11,6 +11,7 @@ pub fn hash2(x: i32, y: i32, seed: u32) -> f32 {
 }
 
 /// Smooth value noise in `[0, 1)`; `scale` is the feature size in pixels.
+#[inline]
 pub fn value_noise(x: f32, y: f32, scale: f32, seed: u32) -> f32 {
     let (fx, fy) = (x / scale, y / scale);
     let (ix, iy) = (fx.floor() as i32, fy.floor() as i32);
@@ -24,6 +25,31 @@ pub fn value_noise(x: f32, y: f32, scale: f32, seed: u32) -> f32 {
     let top = a + (b - a) * sx;
     let bottom = c + (d - c) * sx;
     top + (bottom - top) * sy
+}
+
+/// [`value_noise`] along row `y` from `x0`: calls `f(i, noise at x0 + i)` for `n` pixels. Same
+/// values, but the lattice hashes are computed once per cell instead of per pixel.
+pub fn value_noise_row(x0: i32, y: i32, n: usize, scale: f32, seed: u32, mut f: impl FnMut(usize, f32)) {
+    let fy = y as f32 / scale;
+    let iy = fy.floor() as i32;
+    let ty = fy - fy.floor();
+    let s = |t: f32| t * t * (3.0 - 2.0 * t);
+    let sy = s(ty);
+    let mut cell = None;
+    let (mut a, mut b, mut c, mut d) = (0.0, 0.0, 0.0, 0.0);
+    for i in 0..n {
+        let fx = (x0 + i as i32) as f32 / scale;
+        let ix = fx.floor() as i32;
+        if cell != Some(ix) {
+            cell = Some(ix);
+            (a, b) = (hash2(ix, iy, seed), hash2(ix + 1, iy, seed));
+            (c, d) = (hash2(ix, iy + 1, seed), hash2(ix + 1, iy + 1, seed));
+        }
+        let sx = s(fx - fx.floor());
+        let top = a + (b - a) * sx;
+        let bottom = c + (d - c) * sx;
+        f(i, top + (bottom - top) * sy);
+    }
 }
 
 /// Small xorshift random generator.
@@ -52,6 +78,18 @@ impl Rng {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn noise_rows_match_pixels() {
+        for (scale, seed) in [(3.0, 5), (2.5, 13), (14.0, 17)] {
+            for y in [-7, 0, 5, 1001] {
+                super::value_noise_row(-40, y, 300, scale, seed, |i, v| {
+                    let x = -40 + i as i32;
+                    assert_eq!(v, super::value_noise(x as f32, y as f32, scale, seed));
+                });
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

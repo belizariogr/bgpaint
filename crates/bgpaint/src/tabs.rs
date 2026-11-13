@@ -94,7 +94,11 @@ impl PaintApp {
             history: std::mem::take(&mut self.history),
             file: std::mem::take(&mut self.file),
             view: std::mem::take(&mut self.view),
-            tiles: std::mem::take(&mut self.tiles),
+            // A tab in the background keeps no GPU textures; they are recomposited on return.
+            tiles: {
+                self.tiles = Tiles::default();
+                Tiles::default()
+            },
             thumbs: std::mem::take(&mut self.thumbs),
             preview_dirty: std::mem::take(&mut self.preview_dirty),
         }
@@ -239,6 +243,11 @@ impl PaintApp {
     /// Asks about every tab with unsaved changes in turn, then closes the window.
     pub fn request_exit(&mut self) {
         self.commit_interaction();
+        // Saves still being written settle which tabs have changes: wait for them.
+        if self.files.saving > 0 {
+            self.files.exit_after_saves();
+            return;
+        }
         if !self.needs_saving(self.tab_id, self.unsaved(), self.history.state_id())
             && let Some(p) = self.tabs.iter().position(|t| self.needs_saving(t.id, t.unsaved(), t.history.state_id()))
         {

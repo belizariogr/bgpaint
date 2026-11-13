@@ -8,6 +8,7 @@
 use crate::document::Document;
 use crate::raster::{self, TooLarge};
 use crate::{color::Color, ora};
+use rayon::prelude::*;
 use std::io::Cursor;
 use std::path::Path;
 use tiny_skia::Pixmap;
@@ -153,6 +154,10 @@ pub fn decode(bytes: &[u8], ext: &str) -> Result<Pixmap, IoError> {
     if looks_like_svg(bytes, ext) {
         return decode_svg(bytes);
     }
+    // PNGs written by BGPaint decode on every core.
+    if let Some(p) = crate::png::decode(bytes) {
+        return Ok(p);
+    }
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     if reader.format().is_none()
         && let Some(f) = image::ImageFormat::from_extension(ext)
@@ -164,8 +169,23 @@ pub fn decode(bytes: &[u8], ext: &str) -> Result<Pixmap, IoError> {
     limits.max_image_width = Some(raster::MAX_SIDE);
     limits.max_image_height = Some(raster::MAX_SIDE);
     reader.limits(limits);
-    let img = reader.decode()?.into_rgba8();
-    Ok(raster::from_straight_rgba(img.width(), img.height(), img.as_raw())?)
+    let img = match reader.decode()? {
+        // The common opaque case, widened on every core.
+        image::DynamicImage::ImageRgb8(rgb) => {
+            let (w, h) = (rgb.width(), rgb.height());
+            let src = rgb.into_raw();
+            let mut out = vec![255u8; w as usize * h as usize * 4];
+            out.as_chunks_mut::<4>().0.par_chunks_mut(1 << 14).zip(src.as_chunks::<3>().0.par_chunks(1 << 14)).for_each(|(o, s)| {
+                for (o, s) in o.iter_mut().zip(s) {
+                    o[..3].copy_from_slice(s);
+                }
+            });
+            image::RgbaImage::from_raw(w, h, out).expect("buffer sized for the image")
+        }
+        other => other.into_rgba8(),
+    };
+    let (w, h) = (img.width(), img.height());
+    Ok(raster::from_straight_rgba_vec(w, h, img.into_raw())?)
 }
 
 /// Rasterizes an SVG at its intrinsic size (scaled down if it exceeds the size limits).
@@ -184,22 +204,21 @@ pub fn decode_svg(bytes: &[u8]) -> Result<Pixmap, IoError> {
     Ok(pixmap)
 }
 
+/// Deflate level of saved PNGs (and of the layers in projects).
+pub const PNG_LEVEL: u32 = 6;
+
 /// Encodes a flattened image.
 pub fn encode(pixmap: &Pixmap, format: SaveFormat) -> Result<Vec<u8>, IoError> {
     use image::ImageEncoder;
+    if format == SaveFormat::Png {
+        return Ok(crate::png::encode(pixmap, PNG_LEVEL));
+    }
     let (w, h) = (pixmap.width(), pixmap.height());
     let rgba = raster::to_straight_rgba(pixmap);
     let opaque = !raster::has_transparency(pixmap);
     let mut out = Vec::new();
     match format {
-        SaveFormat::Png => {
-            let enc = image::codecs::png::PngEncoder::new(&mut out);
-            if opaque {
-                enc.write_image(&rgb_only(&rgba), w, h, image::ExtendedColorType::Rgb8)?;
-            } else {
-                enc.write_image(&rgba, w, h, image::ExtendedColorType::Rgba8)?;
-            }
-        }
+        SaveFormat::Png => unreachable!("handled above"),
         SaveFormat::Jpeg => {
             let rgb = flatten_on(&rgba, Color::WHITE);
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92).write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
@@ -229,19 +248,27 @@ pub fn encode(pixmap: &Pixmap, format: SaveFormat) -> Result<Vec<u8>, IoError> {
 }
 
 fn rgb_only(rgba: &[u8]) -> Vec<u8> {
-    rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
+    let (px, _) = rgba.as_chunks::<4>();
+    let mut out = vec![0u8; px.len() * 3];
+    out.par_chunks_mut(3 << 14).zip(px.par_chunks(1 << 14)).for_each(|(o, p)| {
+        for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(p) {
+            o.copy_from_slice(&p[..3]);
+        }
+    });
+    out
 }
 
 fn flatten_on(rgba: &[u8], bg: Color) -> Vec<u8> {
-    rgba.as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| {
+    let (px, _) = rgba.as_chunks::<4>();
+    let mut out = vec![0u8; px.len() * 3];
+    out.par_chunks_mut(3 << 14).zip(px.par_chunks(1 << 14)).for_each(|(o, p)| {
+        for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(p) {
             let a = u32::from(p[3]);
             let mix = |c: u8, b: u8| ((u32::from(c) * a + u32::from(b) * (255 - a) + 127) / 255) as u8;
-            [mix(p[0], bg.r), mix(p[1], bg.g), mix(p[2], bg.b)]
-        })
-        .collect()
+            o.copy_from_slice(&[mix(p[0], bg.r), mix(p[1], bg.g), mix(p[2], bg.b)]);
+        }
+    });
+    out
 }
 
 /// Writes bytes atomically (temporary file + rename) so a failed save never corrupts the file.

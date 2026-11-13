@@ -1,10 +1,13 @@
 //! Geometry and rasterization of Paint's shapes.
 
+use crate::blend;
 use crate::brush::Texture;
 use crate::color::Color;
 use crate::geom::{PixelRect, Point, RectF};
 use crate::raster;
 use crate::text::TextStyle;
+use rayon::prelude::*;
+use std::sync::Arc;
 use tiny_skia::{FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -526,36 +529,159 @@ pub fn polygon_path(points: &[Point], closed: bool) -> Option<Path> {
     pb.finish()
 }
 
-/// A rasterized shape ready to be composited at (`x`,`y`).
+/// Side of the tiles a [`RasterShape`] is stored in.
+const SHAPE_TILE: u32 = 128;
+
+/// A rendered shape covering a canvas area, kept as a grid of tiles in which fully transparent
+/// tiles are not stored: a large outline costs little memory and little compositing time. Tiles
+/// are shared, so cloning is cheap.
 #[derive(Clone, Debug)]
 pub struct RasterShape {
-    pub pixmap: Pixmap,
     pub x: i32,
     pub y: i32,
-    /// Part of the shape fell outside the canvas and is missing from `pixmap`.
+    width: u32,
+    height: u32,
+    /// Row-major, `SHAPE_TILE` square (smaller on the right and bottom edges).
+    tiles: Vec<Option<Arc<Pixmap>>>,
+    /// Part of the shape fell outside the canvas and is missing.
     pub clipped: bool,
 }
 
 impl RasterShape {
+    /// Renders `area` (canvas coords) band by band, in parallel: `draw(band, band_area)` draws
+    /// into `band`, whose pixel (0,0) is canvas pixel `(band_area.x0, band_area.y0)`.
+    pub fn render(area: PixelRect, clipped: bool, draw: impl Fn(&mut Pixmap, PixelRect) + Sync) -> Option<Self> {
+        if area.is_empty() {
+            return None;
+        }
+        let rows = area.height().div_ceil(SHAPE_TILE) as usize;
+        let cols = area.width().div_ceil(SHAPE_TILE) as usize;
+        let band = |b: usize| {
+            let y0 = area.y0 + (b as u32 * SHAPE_TILE) as i32;
+            let r = PixelRect::new(area.x0, y0, area.x1, (y0 + SHAPE_TILE as i32).min(area.y1));
+            let mut p = raster::pixmap(r.width(), r.height());
+            draw(&mut p, r);
+            cut_band(&p, cols)
+        };
+        let bands: Vec<Vec<Option<Arc<Pixmap>>>> = if area.area() as usize >= blend::PARALLEL_MIN {
+            (0..rows).into_par_iter().map(band).collect()
+        } else {
+            (0..rows).map(band).collect()
+        };
+        Some(Self { x: area.x0, y: area.y0, width: area.width(), height: area.height(), tiles: bands.concat(), clipped })
+    }
+
+    /// Splits a rendered image placed at (`x`,`y`).
+    pub fn from_pixmap(pixmap: &Pixmap, x: i32, y: i32, clipped: bool) -> Self {
+        let area = PixelRect::from_xywh(x, y, pixmap.width(), pixmap.height());
+        Self::render(area, clipped, |band, r| raster::paste_region(band, pixmap, 0, area.y0 - r.y0)).expect("non-empty pixmap")
+    }
+
     pub fn bounds(&self) -> PixelRect {
-        PixelRect::from_xywh(self.x, self.y, self.pixmap.width(), self.pixmap.height())
+        PixelRect::from_xywh(self.x, self.y, self.width, self.height)
+    }
+
+    fn cols(&self) -> usize {
+        self.width.div_ceil(SHAPE_TILE) as usize
+    }
+
+    /// The stored tiles with their canvas position.
+    pub fn tiles(&self) -> impl Iterator<Item = (i32, i32, &Pixmap)> {
+        let cols = self.cols();
+        self.tiles.iter().enumerate().filter_map(move |(i, t)| {
+            let t = t.as_deref()?;
+            Some((self.x + ((i % cols) as u32 * SHAPE_TILE) as i32, self.y + ((i / cols) as u32 * SHAPE_TILE) as i32, t))
+        })
+    }
+
+    /// The stored tiles that overlap `r` (canvas coords).
+    fn tiles_in(&self, r: PixelRect) -> impl Iterator<Item = (i32, i32, &Pixmap)> {
+        let r = r.intersect(&self.bounds());
+        let cols = self.cols();
+        let t = SHAPE_TILE as i32;
+        let (c0, c1) = ((r.x0 - self.x) / t, (r.x1 - self.x + t - 1) / t);
+        let (r0, r1) = ((r.y0 - self.y) / t, (r.y1 - self.y + t - 1) / t);
+        let empty = r.is_empty();
+        (r0..r1).filter(move |_| !empty).flat_map(move |row| {
+            (c0..c1).filter_map(move |col| {
+                let tile = self.tiles[row as usize * cols + col as usize].as_deref()?;
+                Some((self.x + col * t, self.y + row * t, tile))
+            })
+        })
+    }
+
+    /// Memory used by the tiles not shared with another copy.
+    pub fn unshared_bytes(&self) -> usize {
+        self.tiles.iter().flatten().filter(|t| Arc::strong_count(t) == 1).map(|t| t.data().len()).sum()
+    }
+
+    /// The whole shape as one image (the size of [`Self::bounds`]).
+    pub fn to_pixmap(&self) -> Pixmap {
+        let mut out = raster::pixmap(self.width, self.height);
+        for (x, y, t) in self.tiles() {
+            raster::paste_region(&mut out, t, x - self.x, y - self.y);
+        }
+        out
+    }
+
+    /// Draws the shape over `out`, whose pixel (0,0) is canvas pixel `origin`.
+    pub fn draw_into(&self, out: &mut Pixmap, origin: (i32, i32)) {
+        let w = out.width() as usize;
+        let area = PixelRect::from_xywh(origin.0, origin.1, out.width(), out.height());
+        // Only the rows the shape covers.
+        let rows = area.intersect(&self.bounds());
+        if rows.is_empty() {
+            return;
+        }
+        let (first, last) = ((rows.y0 - area.y0) as usize, (rows.y1 - area.y0) as usize);
+        let (d, _) = out.data_mut().as_chunks_mut::<4>();
+        blend::par_bands(&mut d[first * w..last * w], w, blend::band_rows(w), |r0, band| {
+            let y0 = rows.y0 + r0 as i32;
+            let h = (band.len() / w) as i32;
+            self.over_band(band, w, PixelRect::new(area.x0, y0, area.x1, y0 + h));
+        });
+    }
+
+    /// Draws the shape over `band`, rows of an image `width` pixels wide covering canvas `area`.
+    pub fn over_band(&self, band: &mut [blend::Px], width: usize, area: PixelRect) {
+        for (x, y, t) in self.tiles_in(area) {
+            blend::over_into(band, width, 0, t, x - area.x0, y - area.y0, 255);
+        }
     }
 
     /// Whether a visible pixel of the shape lies within `tol` pixels of `p` (canvas coords).
     pub fn hit(&self, p: Point, tol: f32) -> bool {
         let reach = tol.max(0.0).ceil() as i32;
         let (cx, cy) = p.floor_i();
-        let (w, h) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
-        let data = self.pixmap.data();
-        for y in (cy - reach - self.y).max(0)..=(cy + reach - self.y).min(h - 1) {
-            for x in (cx - reach - self.x).max(0)..=(cx + reach - self.x).min(w - 1) {
-                if data[(y as usize * w as usize + x as usize) * 4 + 3] > 24 {
-                    return true;
-                }
-            }
-        }
-        false
+        let probe = PixelRect::new(cx - reach, cy - reach, cx + reach + 1, cy + reach + 1);
+        self.tiles_in(probe).any(|(x, y, t)| {
+            let r = probe.intersect(&PixelRect::from_xywh(x, y, t.width(), t.height()));
+            let (data, w) = (t.data(), t.width() as usize);
+            (r.y0..r.y1).any(|py| (r.x0..r.x1).any(|px| data[((py - y) as usize * w + (px - x) as usize) * 4 + 3] > 24))
+        })
     }
+}
+
+/// Cuts a rendered band into `cols` tiles, dropping the transparent ones.
+fn cut_band(band: &Pixmap, cols: usize) -> Vec<Option<Arc<Pixmap>>> {
+    let w = band.width() as usize;
+    let (d, _) = band.data().as_chunks::<4>();
+    (0..cols)
+        .map(|c| {
+            let x0 = c * SHAPE_TILE as usize;
+            let x1 = (x0 + SHAPE_TILE as usize).min(w);
+            let rows = d.chunks_exact(w).map(|row| &row[x0..x1]);
+            if rows.clone().all(|row| row.iter().all(|p| p[3] == 0)) {
+                return None;
+            }
+            let mut t = raster::pixmap((x1 - x0) as u32, band.height());
+            let (td, _) = t.data_mut().as_chunks_mut::<4>();
+            for (dst, src) in td.chunks_exact_mut(x1 - x0).zip(rows) {
+                dst.copy_from_slice(src);
+            }
+            Some(Arc::new(t))
+        })
+        .collect()
 }
 
 /// Multiplies a whole image by `opacity`.
@@ -563,7 +689,9 @@ pub fn fade(image: &mut Pixmap, opacity: f32) {
     let opacity = (opacity.clamp(0.0, 1.0) * 255.0).round() as u16;
     if opacity < 255 {
         for c in image.data_mut() {
-            *c = crate::color::mul_div255(u16::from(*c), opacity);
+            if *c != 0 {
+                *c = crate::color::mul_div255(u16::from(*c), opacity);
+            }
         }
     }
 }
@@ -571,43 +699,44 @@ pub fn fade(image: &mut Pixmap, opacity: f32) {
 /// Draws `pixels` stretched into `rect` rotated by `angle` degrees around `pivot`, clipped to the
 /// canvas.
 pub fn render_box(pixels: &Pixmap, rect: RectF, pivot: Point, angle: f32, canvas: (u32, u32)) -> Option<RasterShape> {
+    let (whole, t) = box_transform(pixels, rect, pivot, angle);
+    let bounds = whole.clamp_to(canvas.0, canvas.1);
+    match t {
+        None => RasterShape::render(bounds, bounds != whole, |band, r| {
+            raster::paste_region(band, pixels, whole.x0 - r.x0, whole.y0 - r.y0);
+        }),
+        Some(t) => RasterShape::render(bounds, bounds != whole, |band, r| {
+            raster::draw_transformed(band, pixels, t.post_translate(-r.x0 as f32, -r.y0 as f32), true);
+        }),
+    }
+}
+
+/// Where [`render_box`] puts `pixels` (canvas area, unclipped) and the canvas transform it draws
+/// them with (`None` when they land unscaled on whole pixels).
+pub fn box_transform(pixels: &Pixmap, rect: RectF, pivot: Point, angle: f32) -> (PixelRect, Option<Transform>) {
     let r = rect;
     let (sx, sy) = (r.width() / pixels.width() as f32, r.height() / pixels.height() as f32);
     let exact = angle == 0.0 && (sx - 1.0).abs() < 1e-4 && (sy - 1.0).abs() < 1e-4 && r.min.x.fract() == 0.0 && r.min.y.fract() == 0.0;
-    let c = pivot;
-    let whole = if exact {
-        PixelRect::from_xywh(r.min.x as i32, r.min.y as i32, pixels.width(), pixels.height())
-    } else {
-        let (sin, cos) = angle.to_radians().sin_cos();
-        let mut corners = [(r.min.x, r.min.y), (r.max.x, r.min.y), (r.max.x, r.max.y), (r.min.x, r.max.y)];
-        for (x, y) in &mut corners {
-            let (dx, dy) = (*x - c.x, *y - c.y);
-            (*x, *y) = (c.x + dx * cos - dy * sin, c.y + dx * sin + dy * cos);
-        }
-        let xs = corners.iter().map(|p| p.0);
-        let ys = corners.iter().map(|p| p.1);
-        PixelRect::enclosing(
-            xs.clone().fold(f32::MAX, f32::min),
-            ys.clone().fold(f32::MAX, f32::min),
-            xs.fold(f32::MIN, f32::max),
-            ys.fold(f32::MIN, f32::max),
-        )
-    };
-    let bounds = whole.clamp_to(canvas.0, canvas.1);
-    if bounds.is_empty() {
-        return None;
-    }
-    let mut out = raster::pixmap(bounds.width(), bounds.height());
     if exact {
-        raster::paste_region(&mut out, pixels, r.min.x as i32 - bounds.x0, r.min.y as i32 - bounds.y0);
-    } else {
-        let t = Transform::from_scale(sx, sy)
-            .post_translate(r.min.x, r.min.y)
-            .post_concat(Transform::from_rotate_at(angle, c.x, c.y))
-            .post_translate(-bounds.x0 as f32, -bounds.y0 as f32);
-        raster::draw_transformed(&mut out, pixels, t, true);
+        return (PixelRect::from_xywh(r.min.x as i32, r.min.y as i32, pixels.width(), pixels.height()), None);
     }
-    Some(RasterShape { pixmap: out, x: bounds.x0, y: bounds.y0, clipped: bounds != whole })
+    let c = pivot;
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let mut corners = [(r.min.x, r.min.y), (r.max.x, r.min.y), (r.max.x, r.max.y), (r.min.x, r.max.y)];
+    for (x, y) in &mut corners {
+        let (dx, dy) = (*x - c.x, *y - c.y);
+        (*x, *y) = (c.x + dx * cos - dy * sin, c.y + dx * sin + dy * cos);
+    }
+    let xs = corners.iter().map(|p| p.0);
+    let ys = corners.iter().map(|p| p.1);
+    let whole = PixelRect::enclosing(
+        xs.clone().fold(f32::MAX, f32::min),
+        ys.clone().fold(f32::MAX, f32::min),
+        xs.fold(f32::MIN, f32::max),
+        ys.fold(f32::MIN, f32::max),
+    );
+    let t = Transform::from_scale(sx, sy).post_translate(r.min.x, r.min.y).post_concat(Transform::from_rotate_at(angle, c.x, c.y));
+    (whole, Some(t))
 }
 
 /// Rasterizes `path` (already in canvas coordinates) clipped to the canvas.
@@ -634,9 +763,11 @@ pub fn rasterize_with_head(
         };
         (style, stroke)
     });
-    // The outline's own extent: mitered corners reach up to `miter_limit * width / 2` past a
-    // vertex, far more than the width itself on sharp corners of thick outlines.
-    let b = outline.as_ref().and_then(|(_, s)| path.stroke(s, 1.0)).map_or(path.bounds(), |o| o.bounds());
+    // The outline as a filled path, computed once for every band (what tiny-skia does for strokes
+    // wider than a pixel; thinner ones are drawn as hairlines). Its extent covers mitered
+    // corners, which reach up to `miter_limit * width / 2` past a vertex.
+    let outline = outline.and_then(|(style, s)| Some((style, path.stroke(&s, 1.0)?, s)));
+    let b = outline.as_ref().map_or(path.bounds(), |(_, o, _)| o.bounds());
     let b = head
         .and_then(|h| {
             let hb = h.bounds();
@@ -651,65 +782,64 @@ pub fn rasterize_with_head(
     let pad = 2.0;
     let whole = PixelRect::enclosing(b.left() - pad, b.top() - pad, b.right() + pad, b.bottom() + pad);
     let area = whole.clamp_to(canvas_w, canvas_h);
-    if area.is_empty() {
-        return None;
-    }
-    let mut out = raster::pixmap(area.width(), area.height());
-    let to_local = Transform::from_translate(-area.x0 as f32, -area.y0 as f32);
-    if closed && paint.fill != ShapeStyle::None {
-        draw_styled(&mut out, path, None, paint.fill, paint.fill_color, to_local, area);
-    }
-    if let Some((style, stroke)) = &outline {
-        draw_styled(&mut out, path, Some(stroke), *style, paint.outline_color, to_local, area);
-        if let Some(head) = head {
-            draw_styled(&mut out, head, None, *style, paint.outline_color, to_local, area);
+    RasterShape::render(area, area != whole, |out, band| {
+        let to_local = Transform::from_translate(-band.x0 as f32, -band.y0 as f32);
+        if closed && paint.fill != ShapeStyle::None {
+            draw_styled(out, path, paint.fill, paint.fill_color, to_local, band);
         }
-    }
-    // Faded as one piece, so the outline over the fill does not get darker.
-    fade(&mut out, paint.opacity);
-    Some(RasterShape { pixmap: out, x: area.x0, y: area.y0, clipped: area != whole })
+        if let Some((style, outline, stroke)) = &outline {
+            if *style == ShapeStyle::Solid && stroke.width <= 1.0 {
+                let mut p = Paint::default();
+                p.set_color(paint.outline_color.to_skia());
+                p.anti_alias = true;
+                out.stroke_path(path, &p, stroke, to_local, None);
+            } else {
+                draw_styled(out, outline, *style, paint.outline_color, to_local, band);
+            }
+            if let Some(head) = head {
+                draw_styled(out, head, *style, paint.outline_color, to_local, band);
+            }
+        }
+        // Faded as one piece, so the outline over the fill does not get darker.
+        fade(out, paint.opacity);
+    })
 }
 
-fn draw_styled(out: &mut Pixmap, path: &Path, stroke: Option<&Stroke>, style: ShapeStyle, color: Color, ts: Transform, area: PixelRect) {
+/// Fills `path` into `out` (covering canvas `area`) with a solid or textured style.
+fn draw_styled(out: &mut Pixmap, path: &Path, style: ShapeStyle, color: Color, ts: Transform, area: PixelRect) {
     match style {
         ShapeStyle::None => {}
         ShapeStyle::Solid => {
             let mut p = Paint::default();
             p.set_color(color.to_skia());
             p.anti_alias = true;
-            match stroke {
-                Some(s) => out.stroke_path(path, &p, s, ts, None),
-                None => out.fill_path(path, &p, FillRule::Winding, ts, None),
-            }
+            out.fill_path(path, &p, FillRule::Winding, ts, None);
         }
         ShapeStyle::Textured(texture) => {
             let Some(mut mask) = Mask::new(out.width(), out.height()) else { return };
-            match stroke {
-                Some(s) => {
-                    if let Some(outline) = path.stroke(s, 1.0) {
-                        mask.fill_path(&outline, FillRule::Winding, true, ts);
-                    }
-                }
-                None => mask.fill_path(path, FillRule::Winding, true, ts),
-            }
+            mask.fill_path(path, FillRule::Winding, true, ts);
             let w = out.width() as usize;
             let pm = color.premultiplied();
-            let md = mask.data().to_vec();
-            let data = out.data_mut();
-            for (i, &m) in md.iter().enumerate() {
-                if m == 0 {
+            let mut factors = vec![0.0; w];
+            let (data, _) = out.data_mut().as_chunks_mut::<4>();
+            for (y, (row, m)) in data.chunks_exact_mut(w).zip(mask.data().chunks_exact(w)).enumerate() {
+                if m.iter().all(|&v| v == 0) {
                     continue;
                 }
-                let (lx, ly) = ((i % w) as i32, (i / w) as i32);
-                let f = texture.factor(lx + area.x0, ly + area.y0);
-                let k = (f32::from(m) * f).round() as u16;
-                let px = &mut data[i * 4..i * 4 + 4];
-                let sa = crate::color::mul_div255(u16::from(pm[3]), k);
-                let inv = 255 - u16::from(sa);
-                for c in 0..3 {
-                    px[c] = crate::color::mul_div255(u16::from(pm[c]), k).saturating_add(crate::color::mul_div255(u16::from(px[c]), inv));
+                texture.factor_row(area.x0, area.y0 + y as i32, &mut factors);
+                for ((px, &m), f) in row.iter_mut().zip(m).zip(&factors) {
+                    if m == 0 {
+                        continue;
+                    }
+                    let k = (f32::from(m) * f).round() as u16;
+                    let sa = crate::color::mul_div255(u16::from(pm[3]), k);
+                    let inv = 255 - u16::from(sa);
+                    for c in 0..3 {
+                        px[c] =
+                            crate::color::mul_div255(u16::from(pm[c]), k).saturating_add(crate::color::mul_div255(u16::from(px[c]), inv));
+                    }
+                    px[3] = sa.saturating_add(crate::color::mul_div255(u16::from(px[3]), inv));
                 }
-                px[3] = sa.saturating_add(crate::color::mul_div255(u16::from(px[3]), inv));
             }
         }
     }
@@ -747,7 +877,7 @@ mod tests {
         };
         let path = box_shape_path(ShapeKind::Rectangle, &RectF::from_xywh(10.0, 10.0, 20.0, 20.0)).unwrap();
         let s = rasterize(&path, &paint, true, 100, 100).unwrap();
-        let at = |x: i32, y: i32| raster::get_pixel(&s.pixmap, x - s.x, y - s.y).unwrap();
+        let at = |x: i32, y: i32| raster::get_pixel(&s.to_pixmap(), x - s.x, y - s.y).unwrap();
         assert_eq!(at(20, 20), Color::rgb(255, 0, 0));
         assert_eq!(at(10, 20), Color::BLACK);
         assert_eq!(at(20, 6).a, 0);
@@ -765,11 +895,11 @@ mod tests {
         };
         let path = box_shape_path(ShapeKind::Rectangle, &RectF::from_xywh(10.0, 10.0, 20.0, 20.0)).unwrap();
         let s = rasterize(&path, &paint, true, 100, 100).unwrap();
-        let at = |x: i32, y: i32| raster::get_pixel(&s.pixmap, x - s.x, y - s.y).unwrap();
+        let at = |x: i32, y: i32| raster::get_pixel(&s.to_pixmap(), x - s.x, y - s.y).unwrap();
         assert_eq!(at(20, 20), Color::rgba(255, 0, 0, 128));
         assert_eq!(at(10, 20), Color::rgba(0, 0, 0, 128));
         // Where the outline covers the fill, it is not faded twice.
-        assert!(s.pixmap.pixels().iter().all(|p| p.alpha() <= 128));
+        assert!(s.to_pixmap().pixels().iter().all(|p| p.alpha() <= 128));
     }
 
     #[test]
@@ -800,7 +930,9 @@ mod tests {
         full.stroke_path(&path, &p, &stroke, Transform::identity(), None);
         let ink = |p: &Pixmap| p.pixels().iter().map(|c| u32::from(c.alpha())).sum::<u32>();
         assert!(s.y < 150 - 60, "miter tip clipped: area starts at y = {}", s.y);
-        assert_eq!(ink(&s.pixmap), ink(&full));
+        // Rendered in bands: antialiasing may differ by a hair where a band clips an edge.
+        let (mine, theirs) = (ink(&s.to_pixmap()), ink(&full));
+        assert!(mine.abs_diff(theirs) * 1000 < theirs, "{mine} vs {theirs}");
     }
 
     #[test]
@@ -810,7 +942,7 @@ mod tests {
                 ShapePaint { outline: style, fill: style, width: 8.0, outline_color: Color::BLACK, fill_color: Color::BLACK, opacity: 1.0 };
             let path = box_shape_path(ShapeKind::Oval, &RectF::from_xywh(0.0, 0.0, 50.0, 50.0)).unwrap();
             let s = rasterize(&path, &paint, true, 64, 64).unwrap();
-            let opaque = s.pixmap.pixels().iter().filter(|p| p.alpha() > 0).count();
+            let opaque = s.to_pixmap().pixels().iter().filter(|p| p.alpha() > 0).count();
             if style == ShapeStyle::None {
                 assert_eq!(opaque, 0);
             } else {
