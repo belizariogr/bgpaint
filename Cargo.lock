@@ -474,7 +474,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bgpaint"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "arboard",
  "bgpaint-core",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "bgpaint-core"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "cosmic-text",
  "crc32fast",
